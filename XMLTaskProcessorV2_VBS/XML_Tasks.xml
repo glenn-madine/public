@@ -1,0 +1,429 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    XML_Tasks.xml  –  Sample task file for XMLTaskProcessorV2.vbs
+    ================================================================
+    Root element : <Tasks>
+    Entry point  : <Start> – read first to get Name, Order, BumpOff, Debug, LogFile
+    Run order    : Order="Step1;Step2;Step3" – semicolon-separated list of context names
+                   that map to <Global>, <Group>, <Computer>, or <User> elements,
+                   or to any <TaskGroup Name="..."> element.
+
+    Variable substitution tokens (use in any attribute value):
+        ~UP  = %USERPROFILE%          ~UN  = %USERNAME%
+        ~UT  = %TEMP%                 ~CN  = %COMPUTERNAME%
+        ~AD  = %APPDATA%              ~CS  = %COMSPEC%
+        ~DN  = %USERDOMAIN%           ~HS  = %HOMESHARE%  (UNC home)
+        ~PD  = %PROGRAMDATA%          ~P6  = %PROGRAMFILES%
+        ~P3  = %PROGRAMW6432%         ~PU  = %PUBLIC%
+        ~SY  = %SYSTEMDRIVE%          ~AU  = %ALLUSERSPROFILE%
+        ~LA  = %LOCALAPPDATA%         ~HL  = %HOMEDRIVE%
+        ~HP  = %HOMEPATH%             ~CD  = current working folder
+        ~UD  = user display name
+
+    WTS / PC flags (present on most child elements):
+        WTS="true"  – run only in a Remote Desktop / terminal-services session
+        PC="true"   – run only on a local PC (non-WTS) session
+        Set both to "true" to run in all environments.
+
+    Operator values used by RunIf / RunIfVar / SetRegIfVar:
+        eq | equ    equal
+        ne | neq    not equal
+        gt          greater than
+        lt          less than
+        geq         greater than or equal
+        leq         less than or equal
+        in          substring match
+        notin       substring not present
+-->
+
+<Tasks>
+
+    <!-- ═══════════════════════════════════════════════════════
+         START  –  Script metadata and run-order declaration
+         ═══════════════════════════════════════════════════════ -->
+    <Start
+        Name     = "My Company Login Script v2"
+        Order    = "Global;Sales;Workstation-PC01;jsmith;CustomTasks"
+        BumpOff  = "TerminatedUsers"
+        Debug    = "false"
+        LogFile  = "~UT\LoginScript.log"
+    />
+
+    <!-- ═══════════════════════════════════════════════════════
+         GLOBAL  –  Tasks that run for every user / every machine
+         Name attribute is ignored for matching; all items run.
+         ═══════════════════════════════════════════════════════ -->
+    <Global Name="Global">
+
+        <!-- Show a progress bar (requires ShowProgress.hta in the script folder) -->
+        <!-- BarText / Text are interchangeable -->
+        <ShowProgress
+            BarText = "Applying your settings, please wait…"
+            Banner  = "IT Department"
+            Type    = ""
+            WTS     = "true"
+            PC      = "true"
+        />
+
+        <!-- Pop up a message before any other work -->
+        <PopupMessageFirst
+            Text    = "Welcome, ~UN!  Applying your login settings."
+            Caption = "Login Script"
+            TimeOut = "5"
+            WTS     = "false"
+            PC      = "true"
+        />
+
+        <!-- Set / update a Windows environment variable for the user -->
+        <SetEnv
+            Var   = "DEPT_SHARE"
+            Value = "\\fileserver\departments"
+            WTS   = "true"
+            PC    = "true"
+        />
+
+        <!-- Append a folder to the user PATH -->
+        <AddPath
+            Path = "~SY\CustomTools\bin"
+            WTS  = "true"
+            PC   = "true"
+        />
+
+        <!-- Write a registry value -->
+        <!-- Op values: write | delete -->
+        <Reg
+            Key   = "HKCU\Software\MyCompany\LoginScript"
+            Value = "LastRun"
+            Data  = "~UN"
+            Type  = "REG_SZ"
+            Op    = "write"
+            WTS   = "true"
+            PC    = "true"
+        />
+
+        <!-- Map a network drive -->
+        <Map
+            Drive       = "H:"
+            UNC         = "\\fileserver\users\~UN"
+            ForceMap    = "true"
+            Persistent  = "false"
+            WTS         = "true"
+            PC          = "true"
+            Default     = "false"
+            DelayBefore = "0"
+            DelayAfter  = "500"
+        />
+
+        <!-- Map a network printer (use Printer= instead of Drive=) -->
+        <Map
+            Printer     = "\\printserver\HP-Floor2"
+            UNC         = "\\printserver\HP-Floor2"
+            ForceMap    = "false"
+            Persistent  = "false"
+            WTS         = "false"
+            PC          = "true"
+            Default     = "true"
+            DelayBefore = "0"
+            DelayAfter  = "0"
+        />
+
+        <!-- Create a folder -->
+        <Create
+            Folder      = "~UP\MyAppData"
+            OverWrite   = "false"
+            WTS         = "true"
+            PC          = "true"
+        />
+
+        <!-- Create an empty file -->
+        <Create
+            File        = "~UP\MyAppData\settings.ini"
+            OverWrite   = "false"
+            WTS         = "true"
+            PC          = "true"
+        />
+
+        <!-- Create a desktop shortcut -->
+        <Create
+            Shortcut    = "~UP\Desktop\MyApp.lnk"
+            Cmd         = "~SY\Program Files\MyApp\MyApp.exe"
+            WorkDir     = "~SY\Program Files\MyApp"
+            Icon        = "~SY\Program Files\MyApp\MyApp.exe,0"
+            Location    = "~UP\Desktop\MyApp.lnk"
+            HotKey      = ""
+            WindowStyle = "1"
+            OverWrite   = "true"
+            WTS         = "false"
+            PC          = "true"
+        />
+
+        <!-- Copy a single file -->
+        <Copy
+            File      = "\\fileserver\common\template.docx"
+            To        = "~UP\Documents\template.docx"
+            OverWrite = "true"
+            WTS       = "true"
+            PC        = "true"
+        />
+
+        <!-- Copy an entire folder tree -->
+        <CopyFolder
+            Folder = "\\fileserver\common\AppTemplates"
+            To     = "~UP\AppTemplates"
+            WTS    = "true"
+            PC     = "true"
+        />
+
+        <!-- Run a program and optionally wait for it to finish -->
+        <!-- Wait: true=wait for completion, false=fire-and-forget -->
+        <!-- Visible: true=show window, false=hidden              -->
+        <RunProgram
+            Cmd     = "~SY\Windows\System32\gpupdate.exe /force"
+            Wait    = "true"
+            Visible = "false"
+            WTS     = "false"
+            PC      = "true"
+        />
+
+        <!-- Conditional run: run an action if a named VBS function returns a value -->
+        <!-- What  = name of a VBS function that takes one argument (Item)          -->
+        <!-- Op    = comparison operator  (eq/ne/gt/lt/geq/leq/in/notin)           -->
+        <!-- Do    = action to perform if condition is true (run/delete/…)          -->
+        <!-- ElseDo / ElseDoArg = optional fallback action                          -->
+        <RunIf
+            What        = "FileExists"
+            Item        = "~SY\Program Files\MyApp\MyApp.exe"
+            Op          = "eq"
+            Value       = "true"
+            Do          = "~SY\Program Files\MyApp\MyApp.exe /silent /update"
+            DoArg       = ""
+            ElseDo      = ""
+            ElseDoArg   = ""
+            Wait        = "true"
+            Visible     = "false"
+            WTS         = "true"
+            PC          = "true"
+            Bits        = ""
+        />
+
+        <!-- Conditional run based on a saved environment variable -->
+        <!-- Var = env-variable name set by a previous SetEnv      -->
+        <RunIfVar
+            Var         = "DEPT_SHARE"
+            Op          = "neq"
+            Value       = ""
+            Do          = "~SY\Windows\System32\net.exe use Z: %DEPT_SHARE% /persistent:no"
+            DoArg       = ""
+            ElseDo      = ""
+            ElseDoArg   = ""
+            Wait        = "true"
+            Visible     = "false"
+            WTS         = "true"
+            PC          = "true"
+            Bits        = ""
+        />
+
+        <!-- Conditionally write a registry value based on a variable -->
+        <SetRegIfVar
+            Var      = "DEPT_SHARE"
+            Op       = "neq"
+            Value    = ""
+            RegKey   = "HKCU\Software\MyCompany\Drives"
+            RegValue = "DeptShare"
+            RegType  = "REG_SZ"
+            WTS      = "true"
+            PC       = "true"
+        />
+
+        <!-- Pause execution for a number of milliseconds -->
+        <!-- TimeOut: numeric ms, or yes/on/1 = 1000 ms   -->
+        <Sleep TimeOut="1000" />
+
+        <!-- Display a popup message at the end of processing -->
+        <PopupFinishMessage
+            Text    = "Login script completed successfully."
+            Caption = "Done"
+            TimeOut = "3"
+            WTS     = "false"
+            PC      = "true"
+        />
+
+        <!-- Dismiss the progress bar -->
+        <EndProgress
+            WTS = "false"
+            PC  = "true"
+        />
+
+    </Global>
+
+    <!-- ═══════════════════════════════════════════════════════
+         GROUP  –  Tasks that run only for members of an AD group
+         Name must match an AD group name (case-insensitive).
+         ═══════════════════════════════════════════════════════ -->
+    <Group Name="Sales">
+
+        <!-- Prompt the user to close conflicting apps before continuing -->
+        <!-- ProcList format: "process.exe|Friendly Name,process2.exe|Friendly Name2" -->
+        <ClearProcess
+            ProcList    = "outlook.exe|Microsoft Outlook,teams.exe|Microsoft Teams"
+            Caption     = "Sales App Installer"
+            ElseMsg     = "Click Cancel to skip this installation."
+            ForProcName = "Sales CRM"
+            WTS         = "false"
+            PC          = "true"
+        />
+
+        <ShowProgress
+            Text   = "Applying Sales department settings…"
+            Banner = "IT Department"
+            Type   = ""
+            WTS    = "false"
+            PC     = "true"
+        />
+
+        <Map
+            Drive      = "S:"
+            UNC        = "\\fileserver\sales"
+            ForceMap   = "true"
+            Persistent = "false"
+            WTS        = "true"
+            PC         = "true"
+            Default    = "false"
+        />
+
+        <Reg
+            Key   = "HKCU\Software\SalesCRM"
+            Value = "ServerURL"
+            Data  = "https://crm.mycompany.com"
+            Type  = "REG_SZ"
+            Op    = "write"
+            WTS   = "true"
+            PC    = "true"
+        />
+
+        <RunProgram
+            Cmd     = "\\fileserver\sales\tools\InstallCRM.exe /quiet"
+            Wait    = "true"
+            Visible = "false"
+            WTS     = "false"
+            PC      = "true"
+        />
+
+        <EndProgress WTS="false" PC="true" />
+
+    </Group>
+
+    <!-- ═══════════════════════════════════════════════════════
+         COMPUTER  –  Tasks that run only on a specific machine
+         Name is matched against %COMPUTERNAME% (wildcards OK,
+         e.g.  Name="WS-FLOOR2*" matches WS-FLOOR201, WS-FLOOR202…)
+         ═══════════════════════════════════════════════════════ -->
+    <Computer Name="Workstation-PC01">
+
+        <ShowProgress
+            Text   = "Applying machine-specific settings for ~CN…"
+            Banner = "IT Department"
+            Type   = ""
+            WTS    = "false"
+            PC     = "true"
+        />
+
+        <Reg
+            Key   = "HKLM\Software\MyCompany\Asset"
+            Value = "AssetTag"
+            Data  = "PC-2024-001"
+            Type  = "REG_SZ"
+            Op    = "write"
+            WTS   = "false"
+            PC    = "true"
+        />
+
+        <RunIf
+            What      = "DetectLocalPrinter"
+            Item      = "HP LaserJet 4"
+            Op        = "eq"
+            Value     = "false"
+            Do        = "\\printserver\scripts\InstallPrinter.cmd"
+            Wait      = "true"
+            Visible   = "false"
+            WTS       = "false"
+            PC        = "true"
+        />
+
+        <EndProgress WTS="false" PC="true" />
+
+    </Computer>
+
+    <!-- ═══════════════════════════════════════════════════════
+         USER  –  Tasks that run only for a specific AD user
+         Name is matched against %USERNAME% (case-insensitive).
+         ═══════════════════════════════════════════════════════ -->
+    <User Name="jsmith">
+
+        <ShowProgress
+            Text   = "Applying personal settings for ~UN…"
+            Banner = "IT Department"
+            Type   = ""
+            WTS    = "true"
+            PC     = "true"
+        />
+
+        <Map
+            Drive      = "J:"
+            UNC        = "\\fileserver\personal\jsmith"
+            ForceMap   = "false"
+            Persistent = "false"
+            WTS        = "true"
+            PC         = "true"
+            Default    = "false"
+        />
+
+        <SetEnv
+            Var   = "MYAPP_PROFILE"
+            Value = "jsmith-profile"
+            WTS   = "true"
+            PC    = "true"
+        />
+
+        <EndProgress WTS="true" PC="true" />
+
+    </User>
+
+    <!-- ═══════════════════════════════════════════════════════
+         TASKGROUP  –  Named reusable task block
+         Referenced by name in the Start Order= list.
+         Supports all the same child elements as Group/User/Computer.
+         ═══════════════════════════════════════════════════════ -->
+    <TaskGroup Name="CustomTasks">
+
+        <!-- Additional RunProgram slots (RunProgram1 / RunProgram2) are also
+             parsed by ParseAndRunProgram; they accept the same attributes. -->
+        <RunProgram1
+            Cmd     = "~SY\Windows\System32\wscript.exe \\fileserver\scripts\extra1.vbs"
+            Wait    = "false"
+            Visible = "false"
+            WTS     = "true"
+            PC      = "true"
+        />
+
+        <RunProgram2
+            Cmd     = "~SY\Windows\System32\wscript.exe \\fileserver\scripts\extra2.vbs"
+            Wait    = "false"
+            Visible = "false"
+            WTS     = "true"
+            PC      = "true"
+        />
+
+        <Sleep TimeOut="500" />
+
+        <PopupMessage
+            Text    = "All custom tasks have been applied."
+            Caption = "IT Notification"
+            TimeOut = "5"
+            WTS     = "true"
+            PC      = "true"
+        />
+
+    </TaskGroup>
+
+</Tasks>

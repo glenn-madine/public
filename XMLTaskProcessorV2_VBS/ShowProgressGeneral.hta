@@ -1,0 +1,93 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" id="SetEnv1">
+<head>
+<meta http-equiv="x-ua-compatible" content="ie=7" /> 
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<meta http-equiv="Content-Language" content="en-us" />
+<title >Corp IT Installer</title>
+<HTA:APPLICATION
+     ID="htaInst"
+     APPLICATIONNAME="ProgressBar"
+     Border="Thin"
+     Borderstyle="raised"
+     Caption="yes"
+     MaximizeButton="No"
+     MinimizeButton="No"
+     ShowInTaskbar="Yes"
+     Scroll="No"
+     Sysmenu="No"
+     SINGLEINSTANCE="yes"
+     ICON="XMLTaskProcessor1.ico"
+     Version="1.0"/>
+     
+<style type="text/css">
+table {
+				border: 2px solid #4F85BB;
+				border-collapse: collapse;
+				font-family:Calibri
+				}
+td {   
+				border: 1px solid #4F85BB;
+				  font-family:Calibri
+}
+
+</style>
+     
+<meta name="keywords" content="SetEnv, Set Local Environment," />
+<meta name="description" content="Use this to set or delete local environment variables for Windows." />
+<script language="vbscript" type="text/vbscript" id="s2">
+Option Explicit
+ 
+Sub DoResize
+	Dim screenWidth 
+	Dim screenHeight 
+	Dim posLeft 
+	Dim posTop 
+	'resize  
+	window.resizeTo 380,750
+	screenWidth = Document.ParentWindow.Screen.AvailWidth
+	screenHeight = Document.ParentWindow.Screen.AvailHeight
+	posLeft = (screenWidth - 600) / 2
+	posTop = (screenHeight - 800) / 2    
+	'move to centerscreen
+	window.moveTo posLeft, posTop
+End Sub
+
+Call DoResize() ' run the subroutine to position the containing window (your HTA dialog) before the body is rendered.
+
+</script>     
+</head>
+
+  <SCRIPT LANGUAGE="VBScript">
+    window.resizeto 800, 620
+    
+    Dim vTimer, iCurr, iMax
+    iMax = 123
+  Sub Window_Onload
+  	self.resizeTo 450,130
+  end sub
+ 
+	
+Sub ExitForm
+	self.close
+End Sub 
+
+  </script>
+  <body><table width="130"><tr><td align="center"></td></tr><tr><td align="center">
+    <img src="Busy.gif" alt="" width="389" height="53" ></img>
+    </td></tr></table>
+<script language="vbscript" type="text/vbscript">
+	Dim cmdLine
+	Dim cmdArray
+	Dim i
+	i = instr(1,htaInst.commandLine,"cmd=",1)
+	if i > 0 then 
+		cmdArray = Split(Mid(htaInst.commandLine,i+4,len(htaInst.commandLine)),"~")
+		msg.innerHTML = replace(cmdArray(0),chr(34),"")
+		'msgbox replace(cmdArray(1),chr(34),"")
+		titl.innerHTML = replace(cmdArray(1),chr(34),"")
+		'htaInst.ICON = cmdArray(2)
+	end if 
+  </script>
+    </body>
+</html>
