@@ -1,0 +1,67 @@
+[
+  {
+    "host": "dc01.corp.local",
+    "type": "RDP",
+    "description": "Primary Domain Controller"
+  },
+  {
+    "host": "dc02.corp.local",
+    "type": "RDP",
+    "description": "Secondary Domain Controller"
+  },
+  {
+    "host": "fileserver01",
+    "type": "RDP",
+    "description": "File Server — Building A"
+  },
+  {
+    "host": "devbox-win11.corp.local",
+    "type": "RDP",
+    "description": "Windows 11 Dev Workstation"
+  },
+  {
+    "host": "192.168.1.1",
+    "type": "HTTPS",
+    "description": "Core Router Admin"
+  },
+  {
+    "host": "192.168.1.2",
+    "type": "HTTPS",
+    "description": "Managed Switch — Floor 1"
+  },
+  {
+    "host": "proxmox.corp.local:8006",
+    "type": "HTTPS",
+    "description": "Proxmox Hypervisor Dashboard"
+  },
+  {
+    "host": "grafana.corp.local:3000",
+    "type": "HTTP",
+    "description": "Grafana Monitoring (internal)"
+  },
+  {
+    "host": "jenkins.corp.local:8080",
+    "type": "HTTP",
+    "description": "Jenkins CI — Build Server"
+  },
+  {
+    "host": "webserver01.corp.local",
+    "type": "SSH",
+    "description": "Nginx Web Server — Production"
+  },
+  {
+    "host": "dbserver01.corp.local",
+    "type": "SSH",
+    "description": "PostgreSQL Database Server"
+  },
+  {
+    "host": "backup01.corp.local",
+    "type": "SSH",
+    "description": "Backup Server (rsync)"
+  },
+  {
+    "host": "pi.hole.local",
+    "type": "SSH",
+    "description": "Pi-hole DNS / Ad Blocker"
+  }
+]
