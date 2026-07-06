@@ -1,0 +1,12 @@
+[package]
+name = "docksh"
+version = "0.1.0"
+edition = "2021"
+description = "Docker Shell"
+[dependencies]
+filetime = "0.2"
+unicode-icons = "0.1.0" 
+colored = "2.1"
+[[bin]]
+name = "docksh"
+path = "src/main.rs"
