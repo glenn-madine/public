@@ -1,0 +1,6 @@
+Alice   1500  North
+Bob     2300  South
+Charlie 1200  North
+Diana   3100  West
+Evan    1800  South
+
