@@ -1,5 +1,5 @@
 // RDP+ version 1.5.2
-// Converted from Python to C++ (Win32 API)
+// C++ (Win32 API)
 // Author: Glenn Madine
 // Release_Date: 08/21/2026
 // Requires: Windows SDK, nlohmann/json (single-header, included as json.hpp)
