@@ -1,4 +1,4 @@
-# RDP+ v1.5.1 — Code Documentation
+# RDP+ v1.5.2 — Code Documentation
 
 **File analyzed:** `RDP_Plus.cpp`
 **Author:** Glenn Madine
@@ -49,7 +49,7 @@ Each device object may supply `host`, `type`, and `description` as strings; miss
 
 ## 3. Program flow
 
-1. **`wWinMain`** (lines 690–726) initializes common controls (`ICC_LISTVIEW_CLASSES`), registers the `RDPPlusClass` window class, creates the main window (title `RDP+ v1.5.1 - Select a connection`), and runs the standard `GetMessage`/`DispatchMessage` loop.
+1. **`wWinMain`** (lines 690–726) initializes common controls (`ICC_LISTVIEW_CLASSES`), registers the `RDPPlusClass` window class, creates the main window (title `RDP+ v1.5.2 - Select a connection`), and runs the standard `GetMessage`/`DispatchMessage` loop.
 2. **`WM_CREATE`** (lines 572–626) builds a `SysListView32` control in report mode with three columns (Host / Type / Description), loads `connections.json` into the global `g_devices`, and populates the list view. It also creates the two bottom buttons ("Launch RDP connection not on this list" and "Exit").
 3. **`WM_SIZE`** (lines 628–652) resizes the list view to fill the client area above a fixed-height button row, and centers the two buttons in that row.
 4. **`WM_NOTIFY`** (lines 664–678) handles list view events:
