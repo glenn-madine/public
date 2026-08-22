@@ -1,7 +1,7 @@
-// RDP+ version 1.0.9
+// RDP+ version 1.5.1
 // Converted from Python to C++ (Win32 API)
 // Author: Glenn Madine
-// Release_Date: 06/29/2026
+// Release_Date: 08/21/2026
 // Requires: Windows SDK, nlohmann/json (single-header, included as json.hpp)
 // Compiled using Microsoft C++ 19.51
 // Compile and link command line:
@@ -18,6 +18,7 @@
 #include <vector>
 #include <fstream>
 #include <sstream>
+#include <optional>
 #include <stdexcept>
 #include <algorithm>
 #include "json.hpp"   // nlohmann/json single-header
@@ -29,7 +30,7 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         L"v1.0.9"
+#define VERSION         L"v1.5.1"
 #define IDC_LISTVIEW    1001
 #define IDC_BTN_RDP     1002
 #define IDC_BTN_EXIT    1003
@@ -40,6 +41,176 @@
 #define COL_TYPE    1
 #define COL_DESCRIPTION 2
 
+using json = nlohmann::json;
+
+// --- UTF-8 (std::string, what's in the JSON file) <-> UTF-16 -------------
+// (std::wstring, what Windows wide APIs use) conversion helpers.
+
+std::wstring Utf8ToWide(const std::string& utf8) {
+    if (utf8.empty()) {
+        return std::wstring();
+    }
+    int required = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
+                                        nullptr, 0);
+    if (required <= 0) {
+        throw std::runtime_error("UTF-8 to UTF-16 conversion failed");
+    }
+    std::wstring wide(static_cast<size_t>(required), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), &wide[0], required);
+    return wide;
+}
+
+std::string WideToUtf8(const std::wstring& wide) {
+    if (wide.empty()) {
+        return std::string();
+    }
+    int required = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()),
+                                        nullptr, 0, nullptr, nullptr);
+    if (required <= 0) {
+        throw std::runtime_error("UTF-16 to UTF-8 conversion failed");
+    }
+    std::string utf8(static_cast<size_t>(required), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), &utf8[0], required,
+                         nullptr, nullptr);
+    return utf8;
+}
+
+// --- 1. The structure that mirrors each entry in the JSON array -----------
+struct Action {
+    std::wstring action;   // e.g. L"RDP"
+    std::wstring args;     // e.g. L" /v:" note the space before /v: 
+    std::wstring command;  // e.g. L"C:\\Windows\\System32\\MSTSC.exe"
+};
+
+// The JSON layer still deals in UTF-8 std::string (that's what's on disk
+// and what nlohmann::json's default json type holds) -- these two
+// functions are where the UTF-8 <-> UTF-16/wstring conversion happens.
+void from_json(const json& j, Action& a) {
+    std::string actionUtf8, argsUtf8, commandUtf8;
+    j.at("action").get_to(actionUtf8);  
+    j.at("args").get_to(argsUtf8); 
+    j.at("command").get_to(commandUtf8);
+    a.action = Utf8ToWide(actionUtf8);
+    a.args = Utf8ToWide(argsUtf8);    
+    a.command = Utf8ToWide(commandUtf8);
+}
+  
+void to_json(json& j, const Action& a) {
+    j = json{{"action", WideToUtf8(a.action)}, {"args", WideToUtf8(a.args)}, {"command", WideToUtf8(a.command)}}; 
+}
+
+// --- 2. Read the raw file bytes via Win32 (CreateFileW/ReadFile) ----------
+// so the path itself can be a std::wstring without depending on the
+// MSVC-only std::ifstream(wchar_t*) extension.
+std::string ReadFileUtf8(const std::wstring& filePath) {
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        throw std::runtime_error("Could not open file: " + WideToUtf8(filePath));
+    }
+
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(hFile, &size)) {
+        CloseHandle(hFile);
+        throw std::runtime_error("Could not get file size: " + WideToUtf8(filePath));
+    }
+
+    std::string buffer(static_cast<size_t>(size.QuadPart), '\0');
+    DWORD bytesRead = 0;
+    BOOL ok = ReadFile(hFile, buffer.empty() ? nullptr : &buffer[0],
+                        static_cast<DWORD>(buffer.size()), &bytesRead, nullptr);
+    CloseHandle(hFile);
+
+    if (!ok || bytesRead != buffer.size()) {
+        throw std::runtime_error("Failed reading file: " + WideToUtf8(filePath));
+    }
+    return buffer;
+}
+
+// --- 3. Function that opens the file and returns the parsed array ---------
+std::vector<Action> loadActions(const std::wstring& filePath) {
+    std::string utf8Contents = ReadFileUtf8(filePath);
+
+    json j = json::parse(utf8Contents);
+    if (!j.is_array()) {
+        throw std::runtime_error("Expected top-level JSON array in " + WideToUtf8(filePath));
+    }
+
+    return j.get<std::vector<Action>>();
+}
+
+// --- 4. Search / lookup: get the command for a given action name ----------
+std::optional<std::wstring> findCommandByAction(const std::vector<Action>& actions,
+                                                 const std::wstring& actionName) {
+    auto it = std::find_if(actions.begin(), actions.end(),
+                            [&actionName](const Action& a) { return a.action == actionName; });
+
+    if (it == actions.end()) {
+        return std::nullopt;
+    }
+    return it->command;
+}
+
+// --- 5. Search / lookup: get the args for a given action name ---------- 
+std::optional<std::wstring> findArgsByAction(const std::vector<Action>& actions,
+                                                 const std::wstring& actionName) {
+    auto it = std::find_if(actions.begin(), actions.end(),
+                            [&actionName](const Action& a) { return a.action == actionName; });
+
+    if (it == actions.end()) {
+        return std::nullopt;
+    }
+    return it->args;
+}
+
+// --- 6. Windows-specific helpers -------------------------------------------
+
+// Directory containing the running .exe, with a trailing backslash.
+// Falls back to L"" if it can't be determined.
+std::wstring getExeDirectory() {
+    wchar_t pathBuf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, pathBuf, MAX_PATH);
+    if (len == 0 || len == MAX_PATH) {
+        return L"";
+    }
+    std::wstring exePath(pathBuf, len);
+    size_t slash = exePath.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) {
+        return L"";
+    }
+    return exePath.substr(0, slash + 1);
+}
+
+// Simple append-only log file writer built on Win32 (CreateFileW/WriteFile)
+// so, like ReadFileUtf8 above, it doesn't depend on std::wofstream's
+// wide-path support. Lines are handed in as std::wstring and converted to
+// UTF-8 only at the moment they're written to disk.
+class Logger {
+public:
+    explicit Logger(const std::wstring& path) {
+        handle_ = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+    }
+
+    ~Logger() {
+        if (handle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle_);
+        }
+    }
+
+    void writeLine(const std::wstring& line) {
+        OutputDebugStringW((line + L"\n").c_str());
+        if (handle_ == INVALID_HANDLE_VALUE) {
+            return;
+        }
+        std::string utf8Line = WideToUtf8(line) + "\n";
+        DWORD written = 0;
+        WriteFile(handle_, utf8Line.data(), static_cast<DWORD>(utf8Line.size()), &written, nullptr);
+    }
+
+private:
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+};
 // ---------------------------------------------------------------------------
 // Device record
 // ---------------------------------------------------------------------------
@@ -134,16 +305,23 @@ static std::vector<Device> LoadConnections(const std::wstring& jsonPath) {
 // ---------------------------------------------------------------------------
 // Launch functions
 // ---------------------------------------------------------------------------
-static void LaunchURL(const std::wstring& prefix, const std::wstring& host) {
-    std::wstring url = prefix + host;
-    ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
+std::string WStringToString(const std::wstring& wstr) {
+    if (wstr.empty()) return {};
+    int sizeNeeded = WideCharToMultiByte(
+        CP_UTF8, 0, wstr.data(), (int)wstr.size(), nullptr, 0, nullptr, nullptr);
+    std::string result(sizeNeeded, 0);
+    WideCharToMultiByte(
+        CP_UTF8, 0, wstr.data(), (int)wstr.size(), result.data(), sizeNeeded, nullptr, nullptr);
+    return result;
+} 
 
-static void LaunchRDP(const std::wstring& server) {
-    std::wstring cmd = L"mstsc /v:" + server;
-    // ShellExecute handles mstsc better than CreateProcess on most Windows versions
-    ShellExecuteW(nullptr, L"open", L"mstsc.exe",
-        (L"/v:" + server).c_str(), nullptr, SW_SHOWNORMAL);
+static void LaunchSomething(const std::wstring prefix, const std::wstring args,const std::wstring host) {
+    std::wstring url = prefix + host;
+    if ((prefix.substr(0, 8) == L"https://") || (prefix.substr(0, 7) == L"http://") || (prefix.substr(0, 6) == L"ftp://") || (prefix.substr(0, 8) == L"file://") || (prefix.substr(0, 7) == L"mailto:") || (prefix.substr(0, 4) == L"tel:")) {     
+        ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    } else {  
+        ShellExecuteW(nullptr, L"open", prefix.c_str(), (args+host).c_str(), nullptr, SW_SHOWNORMAL);  
+    }
 }
 
 // Ask for username via InputBox-style dialog
@@ -296,29 +474,6 @@ static std::wstring GetUsernamePopup(HWND parent) {
     return std::wstring(resultBuf);
 }
 
-static void LaunchSSH(HWND parent, const std::wstring& server, int port = 22) {
-    std::wstring username = GetUsernamePopup(parent);
-    if (username.empty()) {
-        OutputDebugStringW(L"SSH connection cancelled or no username provided.\n");
-        return;
-    }
-
-    std::wstring sshCmd = L"ssh -p " + std::to_wstring(port)
-        + L" " + username + L"@" + server;
-
-    // Launch in Windows Terminal if available, else cmd
-    HRESULT hr = ShellExecuteW(nullptr, L"open", L"wt.exe",
-        (L"cmd /c \"" + sshCmd + L" & pause\"").c_str(),
-        nullptr, SW_SHOWNORMAL) > (HINSTANCE)32 ? S_OK : E_FAIL;
-
-    if (FAILED(hr)) {
-        // Fallback: plain cmd window
-        ShellExecuteW(nullptr, L"open", L"cmd.exe",
-            (L"/c \"" + sshCmd + L" & pause\"").c_str(),
-            nullptr, SW_SHOWNORMAL);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Main Window
 // ---------------------------------------------------------------------------
@@ -379,7 +534,7 @@ static void UpdateHeaderSortArrow(HWND hLV, int sortedCol, bool ascending) {
     }
 }
 
-static void PopulateListView(HWND hLV) {
+static void PopulateListView(HWND hLV, const std::vector<Action>& actions) {
     ListView_DeleteAllItems(hLV);
 
     for (int i = 0; i < (int)g_devices.size(); ++i) {
@@ -397,23 +552,22 @@ static void PopulateListView(HWND hLV) {
     }
 }
 
-static void OnItemActivated(HWND hWnd, int index) {
+static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& actions) {
     if (index < 0 || index >= (int)g_devices.size()) return;
     const Device& dev = g_devices[index];
     std::wstring type = ToUpper(dev.type);
-
-    if (type == L"RDP") {
-        LaunchRDP(dev.host);
-    } else if (type == L"HTTP") {
-        LaunchURL(L"http://", dev.host);
-    } else if (type == L"HTTPS") {
-        LaunchURL(L"https://", dev.host);
-    } else if (type == L"SSH") {
-        LaunchSSH(hWnd, dev.host);
-    }
+	
+    // std::optional<std::wstring> 
+	std::wstring cmd = (std::wstring)findCommandByAction(actions, type).value_or(L"Default");
+	std::wstring args = (std::wstring)findArgsByAction(actions, type).value_or(L"Default");
+	LaunchSomething(cmd, args, dev.host); 
 }
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    // Load actions 
+	const std::wstring exeDir = getExeDirectory();
+    const std::wstring ActionJsonPath = exeDir + L"actionDefinitions.json";
+	std::vector<Action> actions = loadActions(ActionJsonPath);	
     switch (msg) {
     case WM_CREATE: {
         // Create ListView
@@ -434,22 +588,22 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         lvc.iSubItem = 0; lvc.cx = 200; lvc.pszText = (LPWSTR)L"Host";
         ListView_InsertColumn(g_hListView, 0, &lvc);
 
-        lvc.iSubItem = 1; lvc.cx = 80; lvc.pszText = (LPWSTR)L"Type";
+        lvc.iSubItem = 1; lvc.cx = 100; lvc.pszText = (LPWSTR)L"Type";
         lvc.fmt = LVCFMT_CENTER;
         ListView_InsertColumn(g_hListView, 1, &lvc);
 
-        lvc.iSubItem = 2; lvc.cx = 250; lvc.pszText = (LPWSTR)L"Description";
+        lvc.iSubItem = 2; lvc.cx = 300; lvc.pszText = (LPWSTR)L"Description";
         lvc.fmt = LVCFMT_LEFT;
         ListView_InsertColumn(g_hListView, 2, &lvc);
 
         // Load data
         std::wstring jsonPath = GetExeDir() + L"\\connections.json";
         g_devices = LoadConnections(jsonPath);
-        PopulateListView(g_hListView);
+        PopulateListView(g_hListView,actions);
 
         // Create "Launch RDP" button
         g_hBtnRDP = CreateWindowExW(
-            0, L"BUTTON", L"New RDP Connection",
+            0, L"BUTTON", L"Launch RDP connection not on this list",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
             0, 0, 0, 0,
             hWnd, (HMENU)IDC_BTN_RDP, GetModuleHandleW(nullptr), nullptr);
@@ -475,8 +629,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT rc;
         GetClientRect(hWnd, &rc);
 
-        const int BTN_H   = 28;
-        const int BTN_W   = 110;
+        const int BTN_H   = 24;
+        const int BTN_W   = 250;
         const int GAP     = 10;
         const int MARGIN  = 6;
 
@@ -512,11 +666,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (pnmh->idFrom == IDC_LISTVIEW) {
             if (pnmh->code == NM_DBLCLK || pnmh->code == NM_RETURN) {
                 int sel = ListView_GetNextItem(g_hListView, -1, LVNI_SELECTED);
-                if (sel >= 0) OnItemActivated(hWnd, sel);
+                if (sel >= 0) OnItemActivated(hWnd, sel, actions);
             } else if (pnmh->code == LVN_COLUMNCLICK) {
                 LPNMLISTVIEW pnmlv = reinterpret_cast<LPNMLISTVIEW>(lParam);
                 SortDevices(pnmlv->iSubItem);
-                PopulateListView(g_hListView);
+                PopulateListView(g_hListView, actions);
                 UpdateHeaderSortArrow(g_hListView, g_sortCol, g_sortAsc);
             }
         }
