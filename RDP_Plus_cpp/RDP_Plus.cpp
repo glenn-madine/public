@@ -1,4 +1,4 @@
-// RDP+ version 1.5.1
+// RDP+ version 1.5.2
 // Converted from Python to C++ (Win32 API)
 // Author: Glenn Madine
 // Release_Date: 08/21/2026
@@ -30,7 +30,7 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         L"v1.5.1"
+#define VERSION         L"v1.5.2"
 #define IDC_LISTVIEW    1001
 #define IDC_BTN_RDP     1002
 #define IDC_BTN_EXIT    1003
@@ -603,7 +603,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         // Create "Launch RDP" button
         g_hBtnRDP = CreateWindowExW(
-            0, L"BUTTON", L"Launch RDP connection not on this list",
+            0, L"BUTTON", L"Launch RDP connection for host not in this list",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
             0, 0, 0, 0,
             hWnd, (HMENU)IDC_BTN_RDP, GetModuleHandleW(nullptr), nullptr);
@@ -704,13 +704,21 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     wc.hIconSm = wc.hIcon; 
     RegisterClassExW(&wc);
  
-    std::wstring windowTitle = std::wstring(L"RDP+ ") + VERSION + L" - Select a connection";
+    std::wstring windowTitle = std::wstring(L"RDP+ ") + VERSION + L" - To launch, doubleclick a host below";
 
     HWND hWnd = CreateWindowExW(
-        0, L"RDPPlusClass", windowTitle.c_str(),
+        0, 
+		L"RDPPlusClass", 
+		windowTitle.c_str(),
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT, 560, 340,
-        nullptr, nullptr, hInst, nullptr);
+        CW_USEDEFAULT, 
+		CW_USEDEFAULT, 
+		600, 
+		400,
+        nullptr, 
+		nullptr, 
+		hInst, 
+		nullptr);
 
     if (!hWnd) return 1;
 
