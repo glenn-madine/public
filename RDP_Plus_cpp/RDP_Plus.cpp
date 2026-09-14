@@ -30,10 +30,12 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         L"v1.5.2"
-#define IDC_LISTVIEW    1001
-#define IDC_BTN_RDP     1002
-#define IDC_BTN_EXIT    1003
+#define VERSION         L"v1.6.0"
+#define IDC_LISTVIEW        1001
+#define IDC_BTN_RDP         1002
+#define IDC_BTN_EXIT        1003
+#define IDC_BTN_EDIT_CONN   1004
+#define IDC_BTN_EDIT_ACTIONS 1005
 #define WM_LAUNCH       (WM_USER + 1)
 
 // Column indices
@@ -303,6 +305,56 @@ static std::vector<Device> LoadConnections(const std::wstring& jsonPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Config file paths (both configs live next to the .exe)
+// ---------------------------------------------------------------------------
+static std::wstring GetConnectionsJsonPath() {
+    return GetExeDir() + L"\\connections.json";
+}
+
+static std::wstring GetActionsJsonPath() {
+    return GetExeDir() + L"\\actionDefinitions.json";
+}
+
+// ---------------------------------------------------------------------------
+// Open a config file for editing in the user's default text editor.
+//
+// Launches Notepad directly (rather than ShellExecute's "open" verb) so this
+// always works even if .json has no file association or is associated with
+// something other than a text editor. If the file doesn't exist yet, it is
+// created with harmless placeholder content first so Notepad opens valid
+// JSON instead of a blank file that would fail to parse on next load.
+// ---------------------------------------------------------------------------
+static bool FileExists(const std::wstring& path) {
+    DWORD attrs = GetFileAttributesW(path.c_str());
+    return (attrs != INVALID_FILE_ATTRIBUTES) && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static void CreateFileWithDefaultContent(const std::wstring& path, const std::string& utf8Content) {
+    HANDLE hFile = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                                CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return; // Someone else created it first, or the directory isn't writable -- either way, let Notepad deal with it.
+    }
+    DWORD written = 0;
+    WriteFile(hFile, utf8Content.data(), static_cast<DWORD>(utf8Content.size()), &written, nullptr);
+    CloseHandle(hFile);
+}
+
+static void OpenJsonFileForEditing(HWND hWnd, const std::wstring& path, const std::string& defaultContentIfMissing) {
+    if (!FileExists(path)) {
+        CreateFileWithDefaultContent(path, defaultContentIfMissing);
+    }
+
+    // Quote the path in case the exe lives under a directory with spaces.
+    std::wstring quotedPath = L"\"" + path + L"\"";
+    HINSTANCE result = ShellExecuteW(hWnd, L"open", L"notepad.exe", quotedPath.c_str(), nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32) {
+        MessageBoxW(hWnd, (L"Could not open Notepad for:\n" + path).c_str(),
+                    L"RDP+", MB_ICONERROR | MB_OK);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Launch functions
 // ---------------------------------------------------------------------------
 std::string WStringToString(const std::wstring& wstr) {
@@ -477,10 +529,13 @@ static std::wstring GetUsernamePopup(HWND parent) {
 // ---------------------------------------------------------------------------
 // Main Window
 // ---------------------------------------------------------------------------
-static HWND      g_hListView = nullptr;
-static HWND      g_hBtnRDP   = nullptr;
-static HWND      g_hBtnExit  = nullptr;
+static HWND      g_hListView       = nullptr;
+static HWND      g_hBtnRDP         = nullptr;
+static HWND      g_hBtnExit        = nullptr;
+static HWND      g_hBtnEditConn    = nullptr;
+static HWND      g_hBtnEditActions = nullptr;
 static std::vector<Device> g_devices;
+static std::vector<Action> g_actions;
 
 // ---------------------------------------------------------------------------
 // Sort state
@@ -552,6 +607,29 @@ static void PopulateListView(HWND hLV, const std::vector<Action>& actions) {
     }
 }
 
+// Reload connections.json and actionDefinitions.json from disk and refresh
+// the list view. Called at startup and whenever the window regains focus,
+// so that changes made via the "Edit connections" / "Edit actions" buttons
+// (in Notepad, running as a separate process) show up without a restart.
+static void ReloadAllData(HWND hWnd) {
+    g_devices = LoadConnections(GetConnectionsJsonPath());
+
+    try {
+        g_actions = loadActions(GetActionsJsonPath());
+    } catch (const std::exception& e) {
+        // actionDefinitions.json is missing or not valid JSON (e.g. mid-edit).
+        // Keep whatever actions we already had rather than crashing the app --
+        // loadActions() throws, and WndProc previously called it unguarded on
+        // every single message, so any parse failure used to take the whole
+        // window down immediately.
+        MessageBoxA(hWnd, e.what(), "RDP+ - Could not load actionDefinitions.json", MB_ICONWARNING | MB_OK);
+    }
+
+    if (g_hListView) {
+        PopulateListView(g_hListView, g_actions);
+    }
+}
+
 static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& actions) {
     if (index < 0 || index >= (int)g_devices.size()) return;
     const Device& dev = g_devices[index];
@@ -564,10 +642,6 @@ static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& act
 }
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    // Load actions 
-	const std::wstring exeDir = getExeDirectory();
-    const std::wstring ActionJsonPath = exeDir + L"actionDefinitions.json";
-	std::vector<Action> actions = loadActions(ActionJsonPath);	
     switch (msg) {
     case WM_CREATE: {
         // Create ListView
@@ -596,10 +670,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         lvc.fmt = LVCFMT_LEFT;
         ListView_InsertColumn(g_hListView, 2, &lvc);
 
-        // Load data
-        std::wstring jsonPath = GetExeDir() + L"\\connections.json";
-        g_devices = LoadConnections(jsonPath);
-        PopulateListView(g_hListView,actions);
+        // Load data (connections.json + actionDefinitions.json)
+        ReloadAllData(hWnd);
 
         // Create "Launch RDP" button
         g_hBtnRDP = CreateWindowExW(
@@ -622,6 +694,26 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         SendMessageW(g_hBtnExit, WM_SETFONT,
             (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 
+        // Create "Edit connections.json" button
+        g_hBtnEditConn = CreateWindowExW(
+            0, L"BUTTON", L"Edit connections.json",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            0, 0, 0, 0,
+            hWnd, (HMENU)IDC_BTN_EDIT_CONN, GetModuleHandleW(nullptr), nullptr);
+
+        SendMessageW(g_hBtnEditConn, WM_SETFONT,
+            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+
+        // Create "Edit actionDefinitions.json" button
+        g_hBtnEditActions = CreateWindowExW(
+            0, L"BUTTON", L"Edit actionDefinitions.json",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            0, 0, 0, 0,
+            hWnd, (HMENU)IDC_BTN_EDIT_ACTIONS, GetModuleHandleW(nullptr), nullptr);
+
+        SendMessageW(g_hBtnEditActions, WM_SETFONT,
+            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+
         return 0;
     }
 
@@ -633,20 +725,30 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         const int BTN_W   = 250;
         const int GAP     = 10;
         const int MARGIN  = 6;
+        const int ROW_GAP = 6;
 
-        // ListView fills everything above the button row
+        // Two rows of two buttons now occupy the bottom of the window.
+        const int BUTTON_AREA_H = BTN_H * 2 + ROW_GAP + MARGIN * 2;
+
+        // ListView fills everything above the button rows
         MoveWindow(g_hListView,
             0, 0,
-            rc.right, rc.bottom - BTN_H - MARGIN * 2,
+            rc.right, rc.bottom - BUTTON_AREA_H,
             TRUE);
 
-        // Two buttons centred together at the bottom
         int totalW = BTN_W * 2 + GAP;
         int startX = (rc.right - totalW) / 2;
-        int btnY   = rc.bottom - BTN_H - MARGIN;
 
-        MoveWindow(g_hBtnRDP,  startX,           btnY, BTN_W, BTN_H, TRUE);
-        MoveWindow(g_hBtnExit, startX + BTN_W + GAP, btnY, BTN_W, BTN_H, TRUE);
+        // Bottom row: Launch RDP / Exit (unchanged pair, moved up one row)
+        int row2Y = rc.bottom - BTN_H - MARGIN;
+        int row1Y = row2Y - ROW_GAP - BTN_H;
+
+        MoveWindow(g_hBtnRDP,  startX,               row1Y, BTN_W, BTN_H, TRUE);
+        MoveWindow(g_hBtnExit, startX + BTN_W + GAP, row1Y, BTN_W, BTN_H, TRUE);
+
+        // New row: Edit connections.json / Edit actionDefinitions.json
+        MoveWindow(g_hBtnEditConn,    startX,               row2Y, BTN_W, BTN_H, TRUE);
+        MoveWindow(g_hBtnEditActions, startX + BTN_W + GAP, row2Y, BTN_W, BTN_H, TRUE);
 
         return 0;
     }
@@ -657,6 +759,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
                 nullptr, nullptr, SW_SHOWNORMAL);
         } else if (LOWORD(wParam) == IDC_BTN_EXIT) {
             DestroyWindow(hWnd);
+        } else if (LOWORD(wParam) == IDC_BTN_EDIT_CONN) {
+            // connections.json is either a JSON array of device objects, or an
+            // object of named groups -- an empty array is valid either way.
+            OpenJsonFileForEditing(hWnd, GetConnectionsJsonPath(), "[]");
+        } else if (LOWORD(wParam) == IDC_BTN_EDIT_ACTIONS) {
+            // actionDefinitions.json must be a top-level JSON array (see loadActions()).
+            OpenJsonFileForEditing(hWnd, GetActionsJsonPath(), "[]");
         }
         return 0;
     }
@@ -666,13 +775,24 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (pnmh->idFrom == IDC_LISTVIEW) {
             if (pnmh->code == NM_DBLCLK || pnmh->code == NM_RETURN) {
                 int sel = ListView_GetNextItem(g_hListView, -1, LVNI_SELECTED);
-                if (sel >= 0) OnItemActivated(hWnd, sel, actions);
+                if (sel >= 0) OnItemActivated(hWnd, sel, g_actions);
             } else if (pnmh->code == LVN_COLUMNCLICK) {
                 LPNMLISTVIEW pnmlv = reinterpret_cast<LPNMLISTVIEW>(lParam);
                 SortDevices(pnmlv->iSubItem);
-                PopulateListView(g_hListView, actions);
+                PopulateListView(g_hListView, g_actions);
                 UpdateHeaderSortArrow(g_hListView, g_sortCol, g_sortAsc);
             }
+        }
+        return 0;
+    }
+
+    case WM_ACTIVATE: {
+        // Reload connections.json / actionDefinitions.json whenever the main
+        // window regains focus, so edits made in Notepad (opened via the
+        // "Edit connections.json" / "Edit actionDefinitions.json" buttons)
+        // are picked up as soon as the user switches back, with no restart.
+        if (LOWORD(wParam) != WA_INACTIVE && g_hListView) {
+            ReloadAllData(hWnd);
         }
         return 0;
     }

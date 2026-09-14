@@ -28,5 +28,10 @@
         "action": "FTP",
 		"args": "",
         "command": "ftp://"
+    },
+    {
+        "action": "SFTP",
+		"args": " sftp://",
+        "command": "C:\\Program Files (x86)\\WinSCP\\WinSCP.exe"
     }
 ]
