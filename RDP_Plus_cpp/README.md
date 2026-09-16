@@ -2,7 +2,7 @@
 
 A lightweight Win32 desktop utility for launching remote sessions (RDP, SSH, VNC, HTTP/HTTPS, or any other command-line tool) against a list of hosts, without touching Windows' built-in Remote Desktop Connection manager. The host list and the launch behavior for each connection "type" are both driven by JSON config files sitting next to the executable, so the tool can be extended to new protocols without recompiling.
 
-- **Version:** v1.6.0
+- **Version:** v1.6.1
 - **Author:** Glenn Madine
 - **Platform:** Windows (Win32 API, no .NET/MFC dependency)
 
