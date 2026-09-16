@@ -1,7 +1,7 @@
-// RDP+ version 1.5.2
+// RDP+ version 1.6.1
 // C++ (Win32 API)
 // Author: Glenn Madine
-// Release_Date: 08/21/2026
+// Release_Date: 09/15/2026
 // Requires: Windows SDK, nlohmann/json (single-header, included as json.hpp)
 // Compiled using Microsoft C++ 19.51
 // Compile and link command line:
@@ -30,18 +30,18 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         L"v1.6.0"
-#define IDC_LISTVIEW        1001
-#define IDC_BTN_RDP         1002
-#define IDC_BTN_EXIT        1003
-#define IDC_BTN_EDIT_CONN   1004
-#define IDC_BTN_EDIT_ACTIONS 1005
-#define WM_LAUNCH       (WM_USER + 1)
+#define VERSION         		L"v1.6.1"
+#define IDC_LISTVIEW        	1001
+#define IDC_BTN_RDP         	1002
+#define IDC_BTN_EXIT        	1003
+#define IDC_BTN_EDIT_CONN   	1004
+#define IDC_BTN_EDIT_ACTIONS	1005
+#define WM_LAUNCH				(WM_USER + 1)
 
 // Column indices
-#define COL_HOST    0
-#define COL_TYPE    1
-#define COL_DESCRIPTION 2
+#define COL_HOST		0
+#define COL_TYPE		1
+#define COL_DESCRIPTION	2
 
 using json = nlohmann::json;
 
@@ -79,9 +79,9 @@ std::string WideToUtf8(const std::wstring& wide) {
 
 // --- 1. The structure that mirrors each entry in the JSON array -----------
 struct Action {
-    std::wstring action;   // e.g. L"RDP"
-    std::wstring args;     // e.g. L" /v:" note the space before /v: 
-    std::wstring command;  // e.g. L"C:\\Windows\\System32\\MSTSC.exe"
+    std::wstring action;	// e.g. L"RDP"
+    std::wstring args;		// e.g. L" /v:" note the space before /v: 
+    std::wstring command;	// e.g. L"C:\\Windows\\System32\\MSTSC.exe"
 };
 
 // The JSON layer still deals in UTF-8 std::string (that's what's on disk
@@ -684,16 +684,6 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         SendMessageW(g_hBtnRDP, WM_SETFONT,
             (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 
-        // Create "Exit" button
-        g_hBtnExit = CreateWindowExW(
-            0, L"BUTTON", L"Exit",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hWnd, (HMENU)IDC_BTN_EXIT, GetModuleHandleW(nullptr), nullptr);
-
-        SendMessageW(g_hBtnExit, WM_SETFONT,
-            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-
         // Create "Edit connections.json" button
         g_hBtnEditConn = CreateWindowExW(
             0, L"BUTTON", L"Edit connections.json",
@@ -713,6 +703,17 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         SendMessageW(g_hBtnEditActions, WM_SETFONT,
             (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+
+        // Create "Exit" button
+        g_hBtnExit = CreateWindowExW(
+            0, L"BUTTON", L"Exit",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            0, 0, 0, 0,
+            hWnd, (HMENU)IDC_BTN_EXIT, GetModuleHandleW(nullptr), nullptr);
+
+        SendMessageW(g_hBtnExit, WM_SETFONT,
+            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+
 
         return 0;
     }
@@ -744,11 +745,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         int row1Y = row2Y - ROW_GAP - BTN_H;
 
         MoveWindow(g_hBtnRDP,  startX,               row1Y, BTN_W, BTN_H, TRUE);
-        MoveWindow(g_hBtnExit, startX + BTN_W + GAP, row1Y, BTN_W, BTN_H, TRUE);
+        MoveWindow(g_hBtnEditActions, startX + BTN_W + GAP, row1Y, BTN_W, BTN_H, TRUE);
 
         // New row: Edit connections.json / Edit actionDefinitions.json
         MoveWindow(g_hBtnEditConn,    startX,               row2Y, BTN_W, BTN_H, TRUE);
-        MoveWindow(g_hBtnEditActions, startX + BTN_W + GAP, row2Y, BTN_W, BTN_H, TRUE);
+        MoveWindow(g_hBtnExit, startX + BTN_W + GAP, row2Y, BTN_W, BTN_H, TRUE);
 
         return 0;
     }
