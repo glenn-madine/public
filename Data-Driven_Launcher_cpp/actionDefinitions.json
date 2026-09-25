@@ -1,0 +1,53 @@
+[
+    {
+        "action": "RDP",
+		"args": " /v:",
+        "command": "C:\\Windows\\System32\\MSTSC.exe"
+    },
+    {
+        "action": "SSH",
+		"args": " ",
+        "command": "C:\\Program Files\\PuTTY\\putty.exe"
+    },
+    {
+        "action": "VNC",
+		"args": " ",
+        "command": "C:\\Program Files\\RealVNC\\VNC Viewer\\vncviewer.exe"
+    },
+    {
+        "action": "HTTPS",
+		"args": "",
+        "command": "https://"
+    },
+    {
+        "action": "HTTP",
+		"args": "",
+        "command": "http://"
+    },
+    {
+        "action": "FTP",
+		"args": "",
+        "command": "ftp://"
+    },
+    {
+        "action": "SFTP",
+		"args": " sftp://",
+        "command": "C:\\Program Files (x86)\\WinSCP\\WinSCP.exe"
+    },
+    {
+        "action": "START",
+	"args": " ",
+        "command": "C:\\Windows\\Explorer.exe"
+    },
+    {
+        "action": "SHELL",
+	"args": " Shell:",
+        "command": "C:\\Windows\\Explorer.exe"
+    },
+    {
+        "action": "CMD",
+	"args": " /k ",
+        "command": "C:\\Windows\\System32\\CMD.exe"
+    }
+
+]

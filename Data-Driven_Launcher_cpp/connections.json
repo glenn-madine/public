@@ -1,0 +1,127 @@
+[
+    {
+        "host": "dc1.ynext.corp",
+        "type": "RDP",
+        "description": "Primary Domain Controller"
+    },
+    {
+        "host": "dc02.corp.local",
+        "type": "RDP",
+        "description": "Secondary Domain Controller"
+    },
+    {
+        "host": "fileserver01",
+        "type": "RDP",
+        "description": "File Server — Building A"
+    },
+    {
+        "host": "devbox-win11.corp.local",
+        "type": "RDP",
+        "description": "Windows 11 Dev Workstation"
+    },
+    {
+        "host": "192.168.1.1",
+        "type": "FTP",
+        "description": "Core Router Admin"
+    },
+    {
+        "host": "192.168.1.2",
+        "type": "HTTPS",
+        "description": "Managed Switch — Floor 1"
+    },
+    {
+        "host": "proxmox.corp.local:8006",
+        "type": "HTTPS",
+        "description": "Proxmox Hypervisor Dashboard"
+    },
+    {
+        "host": "grafana.corp.local:3000",
+        "type": "HTTP",
+        "description": "Grafana Monitoring (internal)"
+    },
+    {
+        "host": "jenkins.corp.local:8080",
+        "type": "HTTP",
+        "description": "Jenkins CI — Build Server"
+    },
+    {
+        "host": "webserver01.corp.local",
+        "type": "SSH",
+        "description": "Nginx Web Server — Production"
+    },
+    {
+        "host": "dbserver01.corp.local",
+        "type": "SSH",
+        "description": "PostgreSQL Database Server"
+    },
+    {
+        "host": "backup01.corp.local",
+        "type": "SSH",
+        "description": "Backup Server (rsync)"
+    },
+    {
+        "host": "pi.hole.local",
+        "type": "SSH",
+        "description": "Pi-hole DNS / Ad Blocker"
+    },
+    {
+        "host": "SomePC.local",
+        "type": "VNC",
+        "description": "Some Windows PC"
+    },
+    {
+        "host": "SomeOtherPC.local",
+        "type": "VNC",
+        "description": "Some Other Windows PC"
+    },
+	{
+		"host": "C:\\IT",
+		"type": "START",
+        "description": "Open IT Folder on Drive C"
+    },
+	{
+        "host": "%OneDrive%",
+        "type": "START",
+        "description": "OneDrive"
+    },
+	{
+        "host": "Desktop",
+        "type": "SHELL",
+        "description": "Desktop"
+    },
+    {
+        "host": "Documents",
+        "type": "SHELL",
+        "description": "Documents"
+    },
+    {
+        "host": "Profile",
+        "type": "SHELL",
+        "description": "Profile"
+    },
+    {
+        "host": "Downloads",
+        "type": "SHELL",
+        "description": "Downloads"
+    },
+    {
+        "host": "MyComputerFolder",
+        "type": "SHELL",
+        "description": "This PC"
+    },
+    {
+        "host": "::{26EE0668-A00A-44D7-9371-BEB064C98683}",
+        "type": "SHELL",
+        "description": "Control Panel"
+    },
+    {
+        "host": "::{ED7BA470-8E54-465E-825C-99712043E01C}",
+        "type": "SHELL",
+        "description": "God Mode"
+    },
+    {
+        "host": "\"C:\\Program Files (x86)\\SomeFolder\\SomeBatch.bat\"",
+        "type": "CMD",
+        "description": "Run SomeBatch.bat"
+    }
+]
