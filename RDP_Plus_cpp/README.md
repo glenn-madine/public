@@ -1,4 +1,4 @@
-# RDP+ (RDP Plus) v1.7.0
+# RDP+ (RDP Plus) v1.7.0 (deprecated. Replaced by DDLaunch+)
 
 **Author:** Glenn Madine  |  **Released:** 09/25/2026  |  **Language:** C++17, Win32 API  |  **Compiler:** Microsoft C++ 19.51
 
