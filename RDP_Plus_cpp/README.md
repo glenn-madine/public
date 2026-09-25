@@ -1,135 +1,214 @@
-# RDP+
+# RDP+ (RDP Plus) v1.7.0
 
-A lightweight Win32 desktop utility for launching remote sessions (RDP, SSH, VNC, HTTP/HTTPS, or any other command-line tool) against a list of hosts, without touching Windows' built-in Remote Desktop Connection manager. The host list and the launch behavior for each connection "type" are both driven by JSON config files sitting next to the executable, so the tool can be extended to new protocols without recompiling.
+**Author:** Glenn Madine  |  **Released:** 09/15/2026  |  **Language:** C++17, Win32 API  |  **Compiler:** Microsoft C++ 19.51
 
-- **Version:** v1.6.1
-- **Author:** Glenn Madine
-- **Platform:** Windows (Win32 API, no .NET/MFC dependency)
+## 1. Overview
 
-## Features
+RDP+ is a small, single-window Windows desktop launcher. It reads a list of hosts (or shell items) from `connections.json` and shows them in a sortable table. Double-clicking a row (or pressing Enter) launches that entry using a command looked up by its **Type** in `actionDefinitions.json`, so the same tool can open RDP sessions, SSH sessions, web pages, Explorer locations, or anything else that can be started from a command line or URL.
 
-- Sortable list view of hosts, grouped by **Host**, **Type**, and **Description** — click a column header to sort, click again to reverse the order.
-- Double-click (or press Enter on) a host to launch its session using whatever command is registered for that host's `type` in `actionDefinitions.json`.
-- **Launch RDP connection for host not in this list** button — a quick escape hatch that opens `mstsc.exe` directly for one-off connections that aren't worth adding to the config.
-- **Edit connections.json** / **Edit actionDefinitions.json** buttons — open either config file directly in Notepad from within the app. The list is automatically reloaded from disk as soon as the main window regains focus, so saved changes show up immediately without restarting RDP+.
-- Handles `http://`, `https://`, `ftp://`, `file://`, `mailto:`, and `tel:` prefixes as URLs (opened via `ShellExecute`) and treats everything else as a local command plus arguments (e.g. launching `mstsc.exe` or an SSH client with the host appended).
-- All JSON is read/written as UTF-8 and converted to/from UTF-16 internally, so non-ASCII hostnames and descriptions are supported.
+Both JSON files live next to the executable and can be edited from inside the app. Changes are picked up automatically the next time the RDP+ window regains focus, with no restart needed.
 
-## Requirements
+## 2. Features
 
-- Windows with the Windows SDK (Common Controls v6 / `comctl32.lib`)
-- Microsoft Visual C++ (built and tested with MSVC 19.51)
-- [nlohmann/json](https://github.com/nlohmann/json) — single-header library, included in this project as `json.hpp`
-- A `resource.h` / `.rc` resource file providing the application icon (`IDI_ICON1`)
+- Data-driven launcher: hosts come from `connections.json`; how each type is launched comes from `actionDefinitions.json`.
+- Three-column report view (Hostname or Shell Item, Type, Description) with full-row select and grid lines.
+- Click any column header to sort; click again to reverse. Sort arrows are shown in the header.
+- Launch by double-click or Enter.
+- URL-style actions (`https://`, `http://`, `ftp://`, `file://`, `mailto:`, `tel:`) open through the default handler; everything else runs as an executable with arguments.
+- **Launch RDP connection for host not in this list** opens a blank Remote Desktop Connection (mstsc.exe).
+- **Edit connections.json** / **Edit actionDefinitions.json** open the file in Notepad, creating it with `[]` if it does not exist.
+- **Run...** opens the standard Windows Run dialog (same as Win+R).
+- Automatic reload of both JSON files whenever the window is re-activated.
+- Full Unicode support: UTF-8 on disk, UTF-16 in the UI.
 
-## Building
+## 3. Requirements
 
-RDP+ is a single translation unit with no build system beyond the compiler. From a Visual Studio "Developer Command Prompt":
+- Windows 10 or 11 (any Windows version with ComCtl32 and Shell.Application should work).
+- Visual Studio / MSVC toolset with the Windows SDK (built with MSVC 19.51, C++17).
+- nlohmann/json single header, saved as `json.hpp` beside the source file.
+- `resource.h` defining `IDI_ICON1`, and a resource script compiled to `RDP_Plus.res` (application icon).
 
-```bat
-CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 ^
-   RDP_Plus.cpp RDP_Plus.res /Fe:RDP_Plus.exe /link ^
-   /SUBSYSTEM:WINDOWS comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib
+## 4. Building
+
+From a *Developer Command Prompt for VS*, compile the resources, then compile and link:
+
+```
+rc RDP_Plus.rc
+CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 RDP_Plus.cpp RDP_Plus.res /Fe:RDP_Plus.exe /link /SUBSYSTEM:WINDOWS comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib
 ```
 
-This produces `RDP_Plus.exe`. Place it in a folder alongside `json.hpp`, `connections.json`, and `actionDefinitions.json` (see below) — RDP+ always looks for its config files in the same directory as the running executable.
+| Switch | Purpose |
+|---|---|
+| /EHsc | Standard C++ exception handling |
+| /W3 | Warning level 3 |
+| /O2 /GL | Optimize for speed; whole-program optimization |
+| /DUNICODE /D_UNICODE | Build against the wide-character (W) Win32 APIs |
+| /DNDEBUG | Release build (disables assert) |
+| /std:c++17 | Needed for std::optional and structured bindings |
+| /SUBSYSTEM:WINDOWS | GUI application (wWinMain entry point, no console) |
 
-## Configuration files
+The `#pragma comment(lib, ...)` lines in the source already pull in comctl32, shell32, shlwapi, ole32 and oleaut32, so the explicit library list on the command line is belt-and-braces.
 
-Both files live next to `RDP_Plus.exe`. Neither one has to exist ahead of time — if you click **Edit connections.json** or **Edit actionDefinitions.json** and the file is missing, RDP+ creates an empty `[]` for you before opening it in Notepad.
+## 5. Deployment
 
-### `connections.json` — the host list
+Place these files together in one folder:
 
-Accepts either a flat JSON array of device objects:
+```
+RDP_Plus.exe
+connections.json
+actionDefinitions.json
+```
 
-```json
+Because the app creates and edits its JSON files beside the .exe, choose a folder the user can write to (for example a folder under the user profile or a tools share). Under `C:\Program Files` a standard user will not be able to save edits.
+
+## 6. Configuration files
+
+### 6.1 connections.json
+
+Each entry is an object with three string fields. Missing fields are left blank.
+
+| Field | Meaning |
+|---|---|
+| host | Hostname, IP, URL remainder, or shell item (e.g. shell:Downloads). Appended to the action's args or URL prefix. |
+| type | Name of the action to use. Case-insensitive here, because it is upper-cased before lookup. |
+| description | Free text shown in the Description column. |
+
+The file can be a flat array:
+
+```
 [
-  { "host": "srv01.ynext.corp", "type": "RDP", "description": "Primary domain controller" },
-  { "host": "192.168.1.50",     "type": "SSH", "description": "Raspberry Pi - piweb" },
-  { "host": "portal.ynext.corp","type": "HTTPS","description": "Internal web portal" }
+  { "host": "dc01.ynext.corp",   "type": "rdp", "description": "Domain controller" },
+  { "host": "piweb.ynext.corp",  "type": "ssh", "description": "Raspberry Pi web server" },
+  { "host": "intranet.ynext.corp", "type": "web", "description": "Intranet site" },
+  { "host": "shell:Downloads",   "type": "explorer", "description": "My Downloads folder" }
 ]
 ```
 
-...or an object whose values are groups (arrays or single objects) of the same device shape — useful for organizing hosts by site, role, etc. RDP+ flattens either shape into one list before display:
+or an object of named groups. Group names are ignored and all entries are flattened into one list (a group value may be a single object or an array):
 
-```json
+```
 {
-  "Domain Controllers": [
-    { "host": "dc1.ynext.corp", "type": "RDP", "description": "DC1" },
-    { "host": "dc2.ynext.corp", "type": "RDP", "description": "DC2" }
+  "Servers": [
+    { "host": "dc01.ynext.corp", "type": "RDP", "description": "Domain controller" }
   ],
-  "Web Servers": {
-    "host": "piweb.ynext.corp", "type": "HTTPS", "description": "Pi web server"
-  }
+  "Pis": [
+    { "host": "piweb.ynext.corp", "type": "SSH", "description": "Raspberry Pi web server" }
+  ]
 }
 ```
 
-Fields:
+### 6.2 actionDefinitions.json
 
-| Field | Required | Description |
-|---|---|---|
-| `host` | yes | Hostname, FQDN, or IP address to connect to. |
-| `type` | yes | Connection type; matched (case-insensitively) against the `action` field in `actionDefinitions.json`. |
-| `description` | no | Free-text note shown in the list view. |
+Must be a top-level JSON array. Every entry must have all three fields, or the file fails to load.
 
-### `actionDefinitions.json` — how each `type` launches
+| Field | Meaning |
+|---|---|
+| action | Action name. Must be UPPERCASE, because the connection's type is upper-cased and then compared exactly. |
+| args | Text placed immediately before the host on the command line. Include any leading space or switch, e.g. " /v:". |
+| command | Executable to run, or a URL prefix such as https://. |
 
-A top-level JSON array where each entry maps a `type` name to the command and arguments used to launch it:
-
-```json
+```
 [
-  { "action": "RDP", "args": " /v:", "command": "C:\\Windows\\System32\\mstsc.exe" },
-  { "action": "SSH", "args": " ",    "command": "C:\\Program Files\\PuTTY\\putty.exe -ssh " },
-  { "action": "VNC", "args": " ",    "command": "C:\\Program Files\\TightVNC\\tvnviewer.exe " }
+  { "action": "RDP",      "args": " /v:", "command": "C:\\Windows\\System32\\mstsc.exe" },
+  { "action": "SSH",      "args": "",     "command": "C:\\Windows\\System32\\OpenSSH\\ssh.exe" },
+  { "action": "WEB",      "args": "",     "command": "https://" },
+  { "action": "EXPLORER", "args": "",     "command": "explorer.exe" }
 ]
 ```
 
-Fields:
+### 6.3 How a launch is built
 
-| Field | Description |
+1. Take the selected row's `type` and upper-case it (`rdp` becomes `RDP`).
+2. Find the first action whose `action` equals that value, and read its `command` and `args`.
+3. If `command` starts with `https://`, `http://`, `ftp://`, `file://`, `mailto:` or `tel:`, open `command + host` with the default handler (e.g. `https://intranet.ynext.corp`).
+4. Otherwise run `command` with the argument string `args + host` (e.g. `mstsc.exe  /v:dc01.ynext.corp`).
+
+## 7. Using RDP+
+
+```
++------------------------------------------------------------------+
+| RDP+ v1.7.0 - To launch, doubleclick a host below                |
++----------------------------+-----------+-------------------------+
+| Hostname or Shell Item     |   Type    | Description             |
++----------------------------+-----------+-------------------------+
+| dc01.ynext.corp            |    rdp    | Domain controller       |
+| piweb.ynext.corp           |    ssh    | Raspberry Pi web server |
+|  ...                                                             |
++------------------------------------------------------------------+
+|  [Launch RDP connection for host...] [Edit actionDefinitions.json]|
+|  [Edit connections.json            ] [  Run...  ] [   Exit    ]   |
++------------------------------------------------------------------+
+```
+
+| Control | What it does |
 |---|---|
-| `action` | The `type` value it matches (matching is case-insensitive; RDP+ upper-cases both sides before comparing). |
-| `command` | The executable to launch, or a URL prefix such as `https://`, `mailto:`, `tel:`, etc. |
-| `args` | Extra arguments inserted before the host, e.g. the leading space and `/v:` flag `mstsc.exe` expects. |
+| List (double-click / Enter) | Launches the selected entry using its action. |
+| Column header click | Sorts by that column (case-insensitive); click again to reverse. |
+| Launch RDP connection for host not in this list | Opens mstsc.exe with no arguments so you can type any host. |
+| Edit actionDefinitions.json | Opens the actions file in Notepad (creates it with [] if missing). |
+| Edit connections.json | Opens the connections file in Notepad (creates it with [] if missing). |
+| Run... | Opens the Windows Run dialog. |
+| Exit | Closes RDP+. |
 
-When the host's `type` doesn't match any entry, RDP+ falls back to the literal string `"Default"` for both command and args rather than failing outright.
+After saving a file in Notepad, just click back on the RDP+ window: both files are reloaded and the list refreshes.
 
-If `actionDefinitions.json` is missing or contains invalid JSON, RDP+ shows a warning dialog and keeps whatever action list it last loaded successfully, instead of crashing.
+## 8. Code structure
 
-## Usage
+| Area | Key functions / types | Notes |
+|---|---|---|
+| Encoding helpers | Utf8ToWide, WideToUtf8, ToWide, WStringToString, ToUpper | UTF-8 (disk/JSON) to UTF-16 (Win32) conversion. |
+| Action model | struct Action, from_json, to_json | nlohmann/json ADL hooks map JSON objects to Action. |
+| Action loading | ReadFileUtf8, loadActions | Reads bytes with CreateFileW/ReadFile; throws on error or non-array. |
+| Action lookup | findCommandByAction, findArgsByAction | Linear search returning std::optional. |
+| Device model | struct Device, LoadConnections | Tolerant parser: flat array or grouped object; shows a message box on errors. |
+| Config paths | GetExeDir, GetConnectionsJsonPath, GetActionsJsonPath | Both files sit beside the .exe. |
+| Config editing | FileExists, CreateFileWithDefaultContent, OpenJsonFileForEditing | Seeds a missing file with [] then opens Notepad. |
+| Launching | LaunchSomething, OnItemActivated | Chooses URL-open vs. executable + args via ShellExecuteW. |
+| Run dialog | ShowRunDialog | COM Shell.Application IShellDispatch::FileRun (documented API). |
+| List view | PopulateListView, SortDevices, UpdateHeaderSortArrow, ReloadAllData | Fill, sort and refresh the table. |
+| Window | WndProc, wWinMain | Creates controls, lays them out on WM_SIZE, handles commands/notifications, reloads on WM_ACTIVATE. |
+| Unused | Logger, getExeDirectory, UsernameDialog, GetUsernamePopup, WM_LAUNCH | Present but never called (see section 9). |
 
-1. Launch `RDP_Plus.exe`.
-2. The list populates from `connections.json`. Click a column header to sort by Host, Type, or Description.
-3. Double-click a row (or select it and press Enter) to launch that connection using the command registered for its type.
-4. Use **Launch RDP connection for host not in this list** for an ad-hoc `mstsc.exe` session.
-5. Use **Edit connections.json** or **Edit actionDefinitions.json** to add, remove, or update entries. Save in Notepad, switch back to RDP+, and the list refreshes automatically.
-6. **Exit** closes the application.
+### Message flow
 
-## Project layout
+- **WM_CREATE**: builds the list view and its three columns, loads both JSON files, creates the five buttons.
+- **WM_SIZE**: list view fills the window above two centred button rows (250 px wide buttons; Run and Exit share the right-hand slot of the bottom row).
+- **WM_COMMAND**: dispatches the five buttons.
+- **WM_NOTIFY**: NM_DBLCLK / NM_RETURN launch the selection; LVN_COLUMNCLICK sorts.
+- **WM_ACTIVATE**: on activation, reloads both JSON files and repopulates the list.
+- **WM_DESTROY**: posts the quit message.
 
-```
-RDP_Plus.cpp          Application source (single file)
-RDP_Plus.res           Compiled resource file (icon, etc.)
-resource.h             Resource ID definitions
-json.hpp                nlohmann/json single-header library
-connections.json        Host list (user-maintained, not checked in with secrets)
-actionDefinitions.json  Per-type launch commands (user-maintained)
-```
+## 9. Review notes and suggested improvements
 
-## How it works (implementation notes)
+The program is compact and readable. The items below are things noticed while documenting it, roughly in order of impact.
 
-- **UI**: A single top-level window built directly on the Win32 API — a `SysListView32` control in report mode plus four buttons, laid out by hand in the `WM_SIZE` handler (no dialog resource or XAML/WinForms layer).
-- **JSON parsing**: [nlohmann/json](https://github.com/nlohmann/json) parses both config files; `from_json`/`to_json` overloads convert the `Action` struct to and from JSON, converting UTF-8 (on disk) to UTF-16 (`std::wstring`, used throughout the Win32 code) at the boundary.
-- **File I/O**: Config files are read via raw Win32 `CreateFileW`/`ReadFile` calls rather than `std::ifstream`, so wide (Unicode) file paths work without relying on MSVC-specific `ifstream` extensions.
-- **Launching**: `ShellExecuteW` is used for everything — recognized URL schemes (`http://`, `https://`, `ftp://`, `file://`, `mailto:`, `tel:`) are opened as URLs; anything else is treated as `command` + `args` + `host` and launched as a local process.
-- **Live reload**: Both config files are reloaded from disk on `WM_ACTIVATE` (whenever the window regains focus), so edits made via the built-in Notepad shortcuts are picked up without restarting the app.
+### Behaviour
 
-## Known limitations
+1. **Repeating error dialog on bad JSON.** `ReloadAllData` runs on every `WM_ACTIVATE` and shows a message box if either file fails to parse. Dismissing the box re-activates the main window, which reloads and shows the box again, until the file is fixed. Consider reloading only when the file's last-write time has changed, or showing the error once per change.
+2. **Unknown types fail silently.** If no action matches, the code falls back to the string `"Default"` and calls `ShellExecuteW("Default", ...)`, which fails with no message. `LaunchSomething` also ignores ShellExecuteW's return value. Showing "No action defined for type X" would help.
+3. **Sort order is lost on reload.** Reloading replaces `g_devices` in file order, but `g_sortCol`/`g_sortAsc` and the header arrow are kept, so the arrow can show a sort that is no longer applied. Re-apply the current sort after loading (without toggling direction).
+4. **Selection is lost on every focus change,** because the list is rebuilt each time the window is activated.
+5. **Hosts with spaces** are appended unquoted to the argument string.
 
-- Windows-only; there is no cross-platform build path (`Win32`, `ShellExecuteW`, `SysListView32`, etc. are all Windows-specific).
-- Editing is delegated entirely to Notepad — RDP+ does not validate JSON syntax before you save, so a malformed edit will surface as a warning dialog on next reload rather than being caught inline.
-- Both config files must live in the same directory as the executable; there's currently no way to point RDP+ at a config location elsewhere (e.g. a shared network path).
+### Build and platform
 
-## License
+1. **Visual styles / sort arrows.** `InitCommonControlsEx` alone does not enable ComCtl32 v6; that needs an application manifest. `HDF_SORTUP`/`HDF_SORTDOWN` arrows only draw with v6, so make sure `RDP_Plus.res` embeds a manifest (or add `#pragma comment(linker, "/manifestdependency:...")`).
+2. `#define UNICODE` / `_UNICODE` in the source duplicate the `/D` switches and can trigger warning C4005 (macro redefinition). Wrap them in `#ifndef`.
+3. `LoadConnections` converts the path to UTF-8 and opens it with a narrow `std::ifstream`. MSVC interprets narrow paths in the ANSI code page, so a folder with non-ASCII characters would fail. Reusing `ReadFileUtf8` (already used for actions) fixes this and unifies the two loaders.
 
-No license file is currently included in this repository. Add one (e.g. MIT, Apache-2.0) before publishing publicly if you intend to allow reuse.
+### Tidy-up
+
+1. Unused code: `Logger`, `getExeDirectory`, `WStringToString`, `UsernameDialog`, `GetUsernamePopup` (an "SSH Login" prompt) and its leftover `dlgBase`/`DlgLayout` structs, and the `WM_LAUNCH` constant. Either wire them up or remove them. If `GetUsernamePopup` is kept, its `BYTE dlgMem[512]` buffer should be DWORD-aligned (e.g. `alignas(4)`).
+2. Duplicate helpers: `ToWide`/`Utf8ToWide`, `WStringToString`/`WideToUtf8`, `GetExeDir`/`getExeDirectory`.
+3. `PopulateListView` takes an `actions` parameter it never uses.
+4. `findCommandByAction` and `findArgsByAction` do the same search twice; a single `findAction` returning the whole `Action` would be simpler.
+5. The `WM_SIZE` comment "Bottom row: Launch RDP / Exit" is out of date (that row is now the top row with Edit actionDefinitions.json).
+6. Both JSON files are loaded twice at start-up (in `WM_CREATE` and on the first `WM_ACTIVATE`).
+
+### Security note
+
+`actionDefinitions.json` can run any program with any arguments, so treat it as trusted configuration. Keep the RDP+ folder writable only by the people who should be able to change what the launcher runs.
+
+## 10. Version
+
+v1.7.0, released 09/15/2026 by Glenn Madine.

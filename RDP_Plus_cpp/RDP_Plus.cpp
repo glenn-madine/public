@@ -1,11 +1,11 @@
-// RDP+ version 1.6.1
+// RDP+ version 1.7.0
 // C++ (Win32 API)
 // Author: Glenn Madine
 // Release_Date: 09/15/2026
 // Requires: Windows SDK, nlohmann/json (single-header, included as json.hpp)
 // Compiled using Microsoft C++ 19.51
 // Compile and link command line:
-//     CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 RDP_Plus.cpp RDP_Plus.res /Fe:RDP_Plus.exe /link /SUBSYSTEM:WINDOWS comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib
+//     CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 RDP_Plus.cpp RDP_Plus.res /Fe:RDP_Plus.exe /link /SUBSYSTEM:WINDOWS comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib
 
 #define UNICODE
 #define _UNICODE
@@ -14,6 +14,7 @@
 #include <commctrl.h>
 #include <shellapi.h>
 #include <shlwapi.h>
+#include <shldisp.h>  // IShellDispatch (Shell.Application) -- used for the Run dialog
 #include <string>
 #include <vector>
 #include <fstream>
@@ -26,16 +27,19 @@
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         		L"v1.6.1"
+#define VERSION         		L"v1.7.0"
 #define IDC_LISTVIEW        	1001
 #define IDC_BTN_RDP         	1002
 #define IDC_BTN_EXIT        	1003
 #define IDC_BTN_EDIT_CONN   	1004
 #define IDC_BTN_EDIT_ACTIONS	1005
+#define IDC_BTN_RUN         	1006
 #define WM_LAUNCH				(WM_USER + 1)
 
 // Column indices
@@ -376,6 +380,36 @@ static void LaunchSomething(const std::wstring prefix, const std::wstring args,c
     }
 }
 
+// ---------------------------------------------------------------------------
+// Show the standard Windows "Run" dialog (same as Win+R).
+//
+// Uses the documented Shell.Application automation object
+// (IShellDispatch::FileRun) rather than the undocumented shell32 ordinal 61
+// (RunFileDlg). __uuidof() is used so no extra GUID library is needed.
+// ---------------------------------------------------------------------------
+static void ShowRunDialog(HWND hWnd) {
+    // COM may already be initialized on this thread; only balance our own init.
+    HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+    IShellDispatch* pShell = nullptr;
+    HRESULT hr = CoCreateInstance(__uuidof(Shell), nullptr, CLSCTX_INPROC_SERVER,
+                                  __uuidof(IShellDispatch), reinterpret_cast<void**>(&pShell));
+    if (SUCCEEDED(hr) && pShell) {
+        hr = pShell->FileRun();
+        pShell->Release();
+    }
+
+    if (FAILED(hr)) {
+        wchar_t msg[128];
+        swprintf_s(msg, L"Could not open the Run dialog (HRESULT 0x%08X).", static_cast<unsigned>(hr));
+        MessageBoxW(hWnd, msg, L"RDP+", MB_ICONERROR | MB_OK);
+    }
+
+    if (SUCCEEDED(hrInit)) {
+        CoUninitialize();
+    }
+}
+
 // Ask for username via InputBox-style dialog
 struct UsernameDialog {
     static std::wstring username;
@@ -534,6 +568,7 @@ static HWND      g_hBtnRDP         = nullptr;
 static HWND      g_hBtnExit        = nullptr;
 static HWND      g_hBtnEditConn    = nullptr;
 static HWND      g_hBtnEditActions = nullptr;
+static HWND      g_hBtnRun         = nullptr;
 static std::vector<Device> g_devices;
 static std::vector<Action> g_actions;
 
@@ -659,7 +694,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
         lvc.fmt  = LVCFMT_LEFT;
 
-        lvc.iSubItem = 0; lvc.cx = 200; lvc.pszText = (LPWSTR)L"Host";
+        lvc.iSubItem = 0; lvc.cx = 200; lvc.pszText = (LPWSTR)L"Hostname or Shell Item";
         ListView_InsertColumn(g_hListView, 0, &lvc);
 
         lvc.iSubItem = 1; lvc.cx = 100; lvc.pszText = (LPWSTR)L"Type";
@@ -702,6 +737,16 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             hWnd, (HMENU)IDC_BTN_EDIT_ACTIONS, GetModuleHandleW(nullptr), nullptr);
 
         SendMessageW(g_hBtnEditActions, WM_SETFONT,
+            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+
+        // Create "Run..." button (opens the Windows Run dialog)
+        g_hBtnRun = CreateWindowExW(
+            0, L"BUTTON", L"Run...",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            0, 0, 0, 0,
+            hWnd, (HMENU)IDC_BTN_RUN, GetModuleHandleW(nullptr), nullptr);
+
+        SendMessageW(g_hBtnRun, WM_SETFONT,
             (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
 
         // Create "Exit" button
@@ -747,9 +792,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         MoveWindow(g_hBtnRDP,  startX,               row1Y, BTN_W, BTN_H, TRUE);
         MoveWindow(g_hBtnEditActions, startX + BTN_W + GAP, row1Y, BTN_W, BTN_H, TRUE);
 
-        // New row: Edit connections.json / Edit actionDefinitions.json
-        MoveWindow(g_hBtnEditConn,    startX,               row2Y, BTN_W, BTN_H, TRUE);
-        MoveWindow(g_hBtnExit, startX + BTN_W + GAP, row2Y, BTN_W, BTN_H, TRUE);
+        // Bottom row: Edit connections.json | Run... | Exit
+        // Run and Exit split the right-hand slot so both rows stay aligned.
+        const int HALF_W = (BTN_W - GAP) / 2;
+        int rightX = startX + BTN_W + GAP;
+        MoveWindow(g_hBtnEditConn, startX,                row2Y, BTN_W,  BTN_H, TRUE);
+        MoveWindow(g_hBtnRun,      rightX,                row2Y, HALF_W, BTN_H, TRUE);
+        MoveWindow(g_hBtnExit,     rightX + HALF_W + GAP, row2Y, HALF_W, BTN_H, TRUE);
 
         return 0;
     }
@@ -758,6 +807,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (LOWORD(wParam) == IDC_BTN_RDP) {
             ShellExecuteW(nullptr, L"open", L"mstsc.exe",
                 nullptr, nullptr, SW_SHOWNORMAL);
+        } else if (LOWORD(wParam) == IDC_BTN_RUN) {
+            ShowRunDialog(hWnd);
         } else if (LOWORD(wParam) == IDC_BTN_EXIT) {
             DestroyWindow(hWnd);
         } else if (LOWORD(wParam) == IDC_BTN_EDIT_CONN) {
