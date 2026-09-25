@@ -1,6 +1,6 @@
 # RDP+ (RDP Plus) v1.7.0
 
-**Author:** Glenn Madine  |  **Released:** 09/15/2026  |  **Language:** C++17, Win32 API  |  **Compiler:** Microsoft C++ 19.51
+**Author:** Glenn Madine  |  **Released:** 09/25/2026  |  **Language:** C++17, Win32 API  |  **Compiler:** Microsoft C++ 19.51
 
 ## 1. Overview
 
@@ -211,4 +211,4 @@ The program is compact and readable. The items below are things noticed while do
 
 ## 10. Version
 
-v1.7.0, released 09/15/2026 by Glenn Madine.
+v1.7.0, released 09/25/2026 by Glenn Madine.
