@@ -1,7 +1,7 @@
 // RDP+ version 1.7.0
 // C++ (Win32 API)
 // Author: Glenn Madine
-// Release_Date: 09/15/2026
+// Release_Date: 09/25/2026
 // Requires: Windows SDK, nlohmann/json (single-header, included as json.hpp)
 // Compiled using Microsoft C++ 19.51
 // Compile and link command line:
