@@ -33,5 +33,21 @@
         "action": "SFTP",
 		"args": " sftp://",
         "command": "C:\\Program Files (x86)\\WinSCP\\WinSCP.exe"
+    },
+    {
+        "action": "START",
+	"args": " ",
+        "command": "C:\\Windows\\Explorer.exe"
+    },
+    {
+        "action": "SHELL",
+	"args": " Shell:",
+        "command": "C:\\Windows\\Explorer.exe"
+    },
+    {
+        "action": "CMD",
+	"args": " /k ",
+        "command": "C:\\Windows\\System32\\CMD.exe"
     }
+
 ]
