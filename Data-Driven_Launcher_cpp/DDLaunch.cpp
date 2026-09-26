@@ -1,14 +1,38 @@
-// Data-Driven Launcher+ version 2.0.0
+// Data-Driven Launcher+ version 2.1.0
 // C++ (Win32 API)
 // Author: Glenn Madine
 // Release_Date: 09/25/2026
+// Changes in 2.1.0 (UI polish):
+//   - Keyboard: IsDialogMessageW in the message loop, so Tab / Shift+Tab move
+//     between the list and the buttons, Enter/Space press the focused
+//     button, and Enter on the list launches the selected entry. Tab order
+//     follows the on-screen layout; focus is restored on re-activation.
+//   - Common Controls v6 manifest dependency (#pragma comment(linker)).
+//   - Per-Monitor V2 DPI awareness: fonts, column widths, button sizes and
+//     margins scale with the monitor's DPI and update live on WM_DPICHANGED.
+//     Buttons size to fit their text; the window has a minimum size.
+// Changes in 2.0.3:
+//   - B3: Unknown or missing types, empty commands and failed launches now
+//         show a clear error message instead of failing silently. Launches
+//         use ShellExecuteExW so the Win32 error is reported. Action names
+//         that differ only by case are pointed out.
+// Changes in 2.0.2:
+//   - B4: URL commands are detected generically (any RFC 3986 scheme such
+//         as ssh://, vnc://, ms-settings:) instead of a hard-coded list;
+//         also fixes "file:///" never being recognised.
+// Changes in 2.0.1:
+//   - B1: JSON files are only reloaded on window activation when their
+//         last-write time or size has changed, so an invalid file shows its
+//         error once instead of looping, and startup no longer loads twice.
+//   - B2: The current column sort (and header arrow) is re-applied after
+//         every reload instead of reverting to file order.
 // Requires: Windows SDK, nlohmann/json (single-header, included as json.hpp)
 // Compiled using Microsoft C++ 19.51
 // Config files: %USERPROFILE%\DDLaunch\actionDefinitions.json and
 //               %USERPROFILE%\DDLaunch\connections.json
 //               (folder and files are created automatically if missing)
 // Compile and link command line:
-//     CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 DDLaunch.cpp DDLaunch.res /Fe:DDLaunch.exe /link /SUBSYSTEM:WINDOWS comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib
+//     CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 DDLaunch.cpp DDLaunch.res /Fe:DDLaunch.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib
 
 #define UNICODE
 #define _UNICODE
@@ -34,10 +58,19 @@
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
 
+// Common Controls v6: visual styles, header sort arrows (HDF_SORTUP/DOWN) and
+// themed buttons. The linker writes this dependency into the manifest; build
+// with /MANIFEST:EMBED (see the command line above) so it is embedded in the
+// .exe. If DDLaunch.rc also embeds its own RT_MANIFEST resource, remove that
+// one (or remove this pragma) to avoid a duplicate-manifest link error.
+#if defined(_MSC_VER)
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
+#endif
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         		L"v2.0.0"
+#define VERSION         		L"v2.1.0"
 #define IDC_LISTVIEW        	1001
 #define IDC_BTN_RDP         	1002
 #define IDC_BTN_EXIT        	1003
@@ -149,28 +182,24 @@ std::vector<Action> loadActions(const std::wstring& filePath) {
     return j.get<std::vector<Action>>();
 }
 
-// --- 4. Search / lookup: get the command for a given action name ----------
-std::optional<std::wstring> findCommandByAction(const std::vector<Action>& actions,
-                                                 const std::wstring& actionName) {
+// --- 4. Search / lookup: find the action entry for a given name -----------
+// One lookup returning the whole entry (replaces the former separate
+// findCommandByAction / findArgsByAction, which searched twice and forced a
+// "Default" fallback when nothing matched). Returns nullptr if not found.
+const Action* findAction(const std::vector<Action>& actions, const std::wstring& actionName) {
     auto it = std::find_if(actions.begin(), actions.end(),
-                            [&actionName](const Action& a) { return a.action == actionName; });
-
-    if (it == actions.end()) {
-        return std::nullopt;
-    }
-    return it->command;
+                           [&actionName](const Action& a) { return a.action == actionName; });
+    return it == actions.end() ? nullptr : &*it;
 }
 
-// --- 5. Search / lookup: get the args for a given action name ---------- 
-std::optional<std::wstring> findArgsByAction(const std::vector<Action>& actions,
-                                                 const std::wstring& actionName) {
+// --- 5. Case-insensitive lookup, used only to improve the error message ----
+// Types are upper-cased before lookup but action names are matched exactly,
+// so an action written as "Rdp" never matches. This lets the "no action"
+// error point that out instead of just saying nothing was found.
+const Action* findActionIgnoreCase(const std::vector<Action>& actions, const std::wstring& actionName) {
     auto it = std::find_if(actions.begin(), actions.end(),
-                            [&actionName](const Action& a) { return a.action == actionName; });
-
-    if (it == actions.end()) {
-        return std::nullopt;
-    }
-    return it->args;
+                           [&actionName](const Action& a) { return _wcsicmp(a.action.c_str(), actionName.c_str()) == 0; });
+    return it == actions.end() ? nullptr : &*it;
 }
 
 // --- 6. Windows-specific helpers -------------------------------------------
@@ -263,7 +292,8 @@ static std::wstring GetExeDir() {
 // ---------------------------------------------------------------------------
 // Load connections.json
 // ---------------------------------------------------------------------------
-static std::vector<Device> LoadConnections(const std::wstring& jsonPath) {
+// hOwner parents the error boxes so they are modal to the main window.
+static std::vector<Device> LoadConnections(HWND hOwner, const std::wstring& jsonPath) {
     std::vector<Device> devices;
 
     // Read via Win32 (ReadFileUtf8) instead of std::ifstream so the path can
@@ -273,7 +303,7 @@ static std::vector<Device> LoadConnections(const std::wstring& jsonPath) {
     try {
         contents = ReadFileUtf8(jsonPath);
     } catch (const std::exception&) {
-        MessageBoxW(nullptr,
+        MessageBoxW(hOwner,
             (L"Error: Could not open " + jsonPath).c_str(),
             L"DDLaunch+", MB_ICONERROR | MB_OK);
         return devices;
@@ -304,7 +334,7 @@ static std::vector<Device> LoadConnections(const std::wstring& jsonPath) {
         }
 
     } catch (const nlohmann::json::exception& e) {
-        MessageBoxA(nullptr, e.what(), "DDLaunch+ JSON Error", MB_ICONERROR | MB_OK);
+        MessageBoxA(hOwner, e.what(), "DDLaunch+ JSON Error", MB_ICONERROR | MB_OK);
     }
 
     return devices;
@@ -497,13 +527,128 @@ std::string WStringToString(const std::wstring& wstr) {
     return result;
 } 
 
-static void LaunchSomething(const std::wstring prefix, const std::wstring args,const std::wstring host) {
-    std::wstring url = prefix + host;
-    if ((prefix.substr(0, 8) == L"https://") || (prefix.substr(0, 7) == L"http://") || (prefix.substr(0, 6) == L"ftp://") || (prefix.substr(0, 8) == L"file://") || (prefix.substr(0, 7) == L"mailto:") || (prefix.substr(0, 4) == L"tel:")) {     
-        ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    } else {  
-        ShellExecuteW(nullptr, L"open", prefix.c_str(), (args+host).c_str(), nullptr, SW_SHOWNORMAL);  
+// ---------------------------------------------------------------------------
+// Generic URL detection (B4)
+//
+// Returns true if `text` starts with a URI scheme as defined by RFC 3986:
+//
+//     scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"
+//
+// This replaces the old hard-coded list (https/http/ftp/file/mailto/tel),
+// which also had an off-by-one on "file://" (compared 8 chars to a 7-char
+// literal) and so never matched "file:///...". Any scheme now works --
+// https://, file:///, ssh://, vnc://, rdp://, mailto:, tel:, ms-settings:,
+// etc. -- as long as Windows has a handler registered for it.
+//
+// Schemes must be at least two characters long so that a Windows drive
+// letter ("C:\Windows\System32\mstsc.exe", "D:foo.exe") is treated as a
+// file path, not a URL. Plain names ("ssh.exe") and UNC paths
+// ("\\server\share\tool.exe") contain no scheme and are also paths.
+// Only ASCII is accepted, per the RFC, so the check is locale-independent.
+// ---------------------------------------------------------------------------
+static bool IsAsciiAlpha(wchar_t c) {
+    return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
+}
+
+static bool IsAsciiDigit(wchar_t c) {
+    return c >= L'0' && c <= L'9';
+}
+
+static bool StartsWithUrlScheme(const std::wstring& text) {
+    const size_t colon = text.find(L':');
+    if (colon == std::wstring::npos || colon < 2) {
+        return false;  // no scheme, or a single drive letter like "C:"
     }
+    if (!IsAsciiAlpha(text[0])) {
+        return false;
+    }
+    for (size_t i = 1; i < colon; ++i) {
+        const wchar_t c = text[i];
+        if (!IsAsciiAlpha(c) && !IsAsciiDigit(c) && c != L'+' && c != L'-' && c != L'.') {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Launching with error reporting (B3)
+//
+// Uses ShellExecuteExW instead of ShellExecuteW so failures come back as a
+// Win32 error code. SEE_MASK_FLAG_NO_UI suppresses the shell's own error
+// dialogs so DDLaunch+ can show one consistent message that names the host,
+// type, command and parameters involved.
+// ---------------------------------------------------------------------------
+
+// System error text for a Win32 error code, without the trailing CR/LF.
+static std::wstring GetErrorText(DWORD err) {
+    LPWSTR buf = nullptr;
+    DWORD len = FormatMessageW(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr, err, 0, reinterpret_cast<LPWSTR>(&buf), 0, nullptr);
+    std::wstring text = (len && buf) ? std::wstring(buf, len) : std::wstring(L"Unknown error.");
+    if (buf) LocalFree(buf);
+    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' ')) {
+        text.pop_back();
+    }
+    return text;
+}
+
+// Runs `file` (an executable or a URL) with optional parameters.
+// Returns ERROR_SUCCESS, or the Win32 error code if the launch failed.
+static DWORD ShellOpen(HWND hOwner, const std::wstring& file, const std::wstring& params) {
+    SHELLEXECUTEINFOW sei = {};
+    sei.cbSize       = sizeof(sei);
+    sei.fMask        = SEE_MASK_FLAG_NO_UI;
+    sei.hwnd         = hOwner;
+    sei.lpVerb       = L"open";
+    sei.lpFile       = file.c_str();
+    sei.lpParameters = params.empty() ? nullptr : params.c_str();
+    sei.nShow        = SW_SHOWNORMAL;
+    if (ShellExecuteExW(&sei)) {
+        return ERROR_SUCCESS;
+    }
+    DWORD err = GetLastError();
+    return err != ERROR_SUCCESS ? err : ERROR_GEN_FAILURE;
+}
+
+// Shows the standard "launch failed" message. ERROR_CANCELLED (e.g. the
+// user declined a UAC prompt) is not an error and is ignored.
+static void ReportLaunchFailure(HWND hOwner, DWORD err, const std::wstring& what,
+                                const std::wstring& file, const std::wstring& params,
+                                const std::wstring& hint) {
+    if (err == ERROR_SUCCESS || err == ERROR_CANCELLED) {
+        return;
+    }
+    wchar_t code[32];
+    swprintf_s(code, L"Error %lu: ", err);
+
+    std::wstring msg = L"Could not launch " + what + L".\n\n";
+    msg += L"Command:\t" + file + L"\n";
+    if (!params.empty()) {
+        msg += L"Parameters:\t" + params + L"\n";
+    }
+    msg += L"\n" + std::wstring(code) + GetErrorText(err);
+    if (!hint.empty()) {
+        msg += L"\n\n" + hint;
+    }
+    MessageBoxW(hOwner, msg.c_str(), L"DDLaunch+ - Launch failed", MB_ICONERROR | MB_OK);
+}
+
+// command is either an executable (run with args + host as parameters) or
+// a URL prefix (command + host is opened with its registered handler).
+// Returns ERROR_SUCCESS or a Win32 error code; `file`/`params` receive what
+// was actually passed to the shell so the caller can report it.
+static DWORD LaunchSomething(HWND hOwner, const std::wstring& command, const std::wstring& args,
+                             const std::wstring& host, std::wstring& file, std::wstring& params) {
+    if (StartsWithUrlScheme(command)) {
+        file = command + host;
+        params.clear();
+    } else {
+        file   = command;
+        params = args + host;
+    }
+    return ShellOpen(hOwner, file, params);
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +832,107 @@ static std::wstring GetUsernamePopup(HWND parent) {
 }
 
 // ---------------------------------------------------------------------------
+// DPI helpers
+//
+// The process is Per-Monitor V2 DPI aware (see EnableDpiAwareness), so all
+// sizes are in physical pixels and must be scaled from 96-DPI "design" values.
+// The newer DPI APIs are loaded dynamically so the .exe still starts on older
+// Windows versions, falling back to system-DPI behavior there.
+// ---------------------------------------------------------------------------
+namespace Dpi {
+
+const UINT kBase = USER_DEFAULT_SCREEN_DPI;  // 96
+
+template <typename Fn>
+static Fn LoadUser32(const char* name) {
+    return reinterpret_cast<Fn>(reinterpret_cast<void*>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), name)));
+}
+
+// Call once, before any window is created. The manifest is the officially
+// preferred place for this, but an API call keeps everything in the source
+// file. If a manifest already sets DPI awareness, these calls simply fail
+// and the manifest setting wins.
+static void EnableDpiAwareness() {
+    // Windows 10 1703+: Per-Monitor V2 (also scales non-client area,
+    // message boxes and common dialogs automatically).
+    using PFN_SetCtx = BOOL (WINAPI*)(HANDLE);
+    if (auto setCtx = LoadUser32<PFN_SetCtx>("SetProcessDpiAwarenessContext")) {
+        if (setCtx(reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4)))) {  // PER_MONITOR_AWARE_V2
+            return;
+        }
+    }
+    // Windows 8.1+: Per-Monitor (v1) via shcore.dll.
+    if (HMODULE shcore = LoadLibraryW(L"shcore.dll")) {
+        using PFN_SetAwareness = HRESULT (WINAPI*)(int);
+        auto setAwareness = reinterpret_cast<PFN_SetAwareness>(reinterpret_cast<void*>(
+            GetProcAddress(shcore, "SetProcessDpiAwareness")));
+        const bool ok = setAwareness && SUCCEEDED(setAwareness(2));  // PROCESS_PER_MONITOR_DPI_AWARE
+        FreeLibrary(shcore);
+        if (ok) return;
+    }
+    // Vista+: system DPI aware.
+    SetProcessDPIAware();
+}
+
+static UINT SystemDpi() {
+    HDC hdc = GetDC(nullptr);
+    UINT dpi = hdc ? static_cast<UINT>(GetDeviceCaps(hdc, LOGPIXELSX)) : kBase;
+    if (hdc) ReleaseDC(nullptr, hdc);
+    return dpi ? dpi : kBase;
+}
+
+// DPI of the monitor the window is on (Windows 10 1607+), else system DPI.
+static UINT ForWindow(HWND hWnd) {
+    using PFN_GetDpiForWindow = UINT (WINAPI*)(HWND);
+    static auto getDpi = LoadUser32<PFN_GetDpiForWindow>("GetDpiForWindow");
+    if (getDpi && hWnd) {
+        UINT dpi = getDpi(hWnd);
+        if (dpi) return dpi;
+    }
+    return SystemDpi();
+}
+
+static int Scale(int value, UINT dpi) {
+    return MulDiv(value, static_cast<int>(dpi), static_cast<int>(kBase));
+}
+
+// The user's message-box font (normally Segoe UI 9pt) at the given DPI.
+static HFONT CreateUiFont(UINT dpi) {
+    NONCLIENTMETRICSW ncm = {};
+    ncm.cbSize = sizeof(ncm);
+
+    using PFN_SPIForDpi = BOOL (WINAPI*)(UINT, UINT, PVOID, UINT, UINT);
+    static auto spiForDpi = LoadUser32<PFN_SPIForDpi>("SystemParametersInfoForDpi");
+    if (spiForDpi && spiForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi)) {
+        return CreateFontIndirectW(&ncm.lfMessageFont);
+    }
+    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+        // Metrics are reported at system DPI; rescale to the target DPI.
+        ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight,
+                                            static_cast<int>(dpi), static_cast<int>(SystemDpi()));
+        return CreateFontIndirectW(&ncm.lfMessageFont);
+    }
+    return nullptr;
+}
+
+// Window size needed for a given client size at the given DPI.
+static SIZE WindowSizeForClient(HWND hWnd, int clientW, int clientH, UINT dpi) {
+    RECT rc = { 0, 0, clientW, clientH };
+    const DWORD style   = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE));
+    const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_EXSTYLE));
+
+    using PFN_AdjustForDpi = BOOL (WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    static auto adjustForDpi = LoadUser32<PFN_AdjustForDpi>("AdjustWindowRectExForDpi");
+    if (!(adjustForDpi && adjustForDpi(&rc, style, FALSE, exStyle, dpi))) {
+        AdjustWindowRectEx(&rc, style, FALSE, exStyle);
+    }
+    return SIZE{ rc.right - rc.left, rc.bottom - rc.top };
+}
+
+}  // namespace Dpi
+
+// ---------------------------------------------------------------------------
 // Main Window
 // ---------------------------------------------------------------------------
 static HWND      g_hListView       = nullptr;
@@ -695,6 +941,10 @@ static HWND      g_hBtnExit        = nullptr;
 static HWND      g_hBtnEditConn    = nullptr;
 static HWND      g_hBtnEditActions = nullptr;
 static HWND      g_hBtnRun         = nullptr;
+static HWND      g_hLastFocus      = nullptr;  // restored when re-activated
+static HFONT     g_hFont           = nullptr;  // UI font for the current DPI
+static UINT      g_dpi             = USER_DEFAULT_SCREEN_DPI;
+static int       g_btnW            = 250;      // button width in pixels (fits text)
 static std::vector<Device> g_devices;
 static std::vector<Action> g_actions;
 
@@ -704,17 +954,19 @@ static std::vector<Action> g_actions;
 static int  g_sortCol = -1;      // last sorted column (-1 = none)
 static bool g_sortAsc = true;    // true = ascending, false = descending
 
-// Sort g_devices by column, toggling direction when the same column is clicked.
-static void SortDevices(int col) {
-    if (g_sortCol == col) {
-        g_sortAsc = !g_sortAsc;  // same column: flip direction
-    } else {
-        g_sortCol = col;
-        g_sortAsc = true;        // new column: always start ascending
+// Sort g_devices using the current sort state (g_sortCol / g_sortAsc) without
+// changing it. Does nothing if no column has been sorted yet. Called after a
+// column click and after every reload, so freshly loaded data keeps the order
+// the header arrow shows (B2). std::stable_sort keeps rows with equal keys in
+// file order, so repeated reloads never shuffle them.
+static void ApplyCurrentSort() {
+    const int col = g_sortCol;
+    if (col < COL_HOST || col > COL_DESCRIPTION) {
+        return;
     }
 
-    bool ascending = g_sortAsc;
-    std::sort(g_devices.begin(), g_devices.end(),
+    const bool ascending = g_sortAsc;
+    std::stable_sort(g_devices.begin(), g_devices.end(),
         [col, ascending](const Device& a, const Device& b) -> bool {
             const std::wstring* pa = nullptr;
             const std::wstring* pb = nullptr;
@@ -727,6 +979,18 @@ static void SortDevices(int col) {
             int cmp = _wcsicmp(pa->c_str(), pb->c_str());
             return ascending ? (cmp < 0) : (cmp > 0);
         });
+}
+
+// Column header click: same column flips direction, a new column starts
+// ascending. Then sorts g_devices with the new state.
+static void ToggleSortColumn(int col) {
+    if (g_sortCol == col) {
+        g_sortAsc = !g_sortAsc;  // same column: flip direction
+    } else {
+        g_sortCol = col;
+        g_sortAsc = true;        // new column: always start ascending
+    }
+    ApplyCurrentSort();
 }
 
 // Update header arrows to reflect the current sort column and direction.
@@ -768,28 +1032,117 @@ static void PopulateListView(HWND hLV, const std::vector<Action>& actions) {
     }
 }
 
-// Reload connections.json and actionDefinitions.json from disk and refresh
-// the list view. Called at startup and whenever the window regains focus,
-// so that changes made via the "Edit connections" / "Edit actions" buttons
-// (in Notepad, running as a separate process) show up without a restart.
-static void ReloadAllData(HWND hWnd) {
-    // Create %USERPROFILE%\DDLaunch and/or either JSON file if missing.
-    EnsureDataFiles(hWnd);
+// ---------------------------------------------------------------------------
+// File change detection (B1)
+//
+// A FileStamp records a file's last-write time and size. The main window
+// reloads a JSON file only when its stamp differs from the one recorded at the
+// last load. The stamp is recorded BEFORE the file is parsed, so an invalid
+// file reports its error once per save. Before this change every WM_ACTIVATE
+// reloaded, so closing the error box re-activated the window, which reloaded,
+// failed and showed the box again in an endless loop.
+// ---------------------------------------------------------------------------
+struct FileStamp {
+    bool     exists = false;
+    FILETIME lastWrite{};
+    ULONGLONG size = 0;
 
-    g_devices = LoadConnections(GetConnectionsJsonPath());
+    bool operator==(const FileStamp& o) const {
+        if (exists != o.exists) return false;
+        if (!exists) return true;  // both missing
+        return size == o.size && CompareFileTime(&lastWrite, &o.lastWrite) == 0;
+    }
+    bool operator!=(const FileStamp& o) const { return !(*this == o); }
+};
 
-    try {
-        g_actions = loadActions(GetActionsJsonPath());
-    } catch (const std::exception& e) {
-        // actionDefinitions.json is missing or not valid JSON (e.g. mid-edit).
-        // Keep whatever actions we already had rather than crashing the app --
-        // loadActions() throws, and WndProc previously called it unguarded on
-        // every single message, so any parse failure used to take the whole
-        // window down immediately.
-        MessageBoxA(hWnd, e.what(), "DDLaunch+ - Could not load actionDefinitions.json", MB_ICONWARNING | MB_OK);
+static FileStamp GetFileStamp(const std::wstring& path) {
+    FileStamp s;
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
+        !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        s.exists    = true;
+        s.lastWrite = fad.ftLastWriteTime;
+        s.size      = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
+    }
+    return s;
+}
+
+static FileStamp g_connStamp;          // connections.json at last load
+static FileStamp g_actionsStamp;       // actionDefinitions.json at last load
+static bool      g_dataLoaded = false; // false until the first successful pass
+static bool      g_inReload   = false; // re-entrancy guard (see below)
+
+// Reload connections.json and/or actionDefinitions.json from disk and refresh
+// the list view.
+//
+//   force == true  : load both files unconditionally (startup).
+//   force == false : load only the file(s) whose stamp changed since the last
+//                    load (window activation). If nothing changed, return
+//                    immediately without touching the disk or the UI.
+//
+// Called at startup and whenever the window regains focus, so changes made
+// via the "Edit connections" / "Edit actions" buttons (in Notepad, a separate
+// process) show up without a restart.
+static void ReloadAllData(HWND hWnd, bool force) {
+    // MessageBox runs a modal loop that can deliver WM_ACTIVATE to this
+    // window while a reload is still in progress; ignore those nested calls.
+    if (g_inReload) {
+        return;
     }
 
-    if (g_hListView) {
+    const std::wstring connPath    = GetConnectionsJsonPath();
+    const std::wstring actionsPath = GetActionsJsonPath();
+
+    // Cheap early-out on activation: nothing on disk changed.
+    if (!force && g_dataLoaded &&
+        GetFileStamp(connPath) == g_connStamp &&
+        GetFileStamp(actionsPath) == g_actionsStamp) {
+        return;
+    }
+
+    // RAII so the guard is cleared on every exit path.
+    struct ReloadGuard {
+        ReloadGuard()  { g_inReload = true; }
+        ~ReloadGuard() { g_inReload = false; }
+    } guard;
+
+    // Create %USERPROFILE%\DDLaunch and/or either JSON file if missing
+    // (e.g. the user deleted one while the app was running).
+    EnsureDataFiles(hWnd);
+
+    // Stamps are taken after EnsureDataFiles so a freshly seeded file is not
+    // seen as "changed" on the next activation. Recording them before parsing
+    // means a broken file is not re-parsed (and re-reported) until it is saved
+    // again.
+    const FileStamp connNow    = GetFileStamp(connPath);
+    const FileStamp actionsNow = GetFileStamp(actionsPath);
+    const bool reloadConn    = force || !g_dataLoaded || connNow    != g_connStamp;
+    const bool reloadActions = force || !g_dataLoaded || actionsNow != g_actionsStamp;
+    g_connStamp    = connNow;
+    g_actionsStamp = actionsNow;
+    g_dataLoaded   = true;
+
+    if (reloadConn) {
+        g_devices = LoadConnections(hWnd, connPath);
+        // B2: keep the user's chosen sort order (and the header arrow, which
+        // is left unchanged) instead of reverting to file order.
+        ApplyCurrentSort();
+    }
+
+    if (reloadActions) {
+        try {
+            g_actions = loadActions(actionsPath);
+        } catch (const std::exception& e) {
+            // actionDefinitions.json is missing or not valid JSON (e.g.
+            // mid-edit). Keep whatever actions we already had rather than
+            // crashing the app. Shown once per save thanks to the stamp.
+            MessageBoxA(hWnd, e.what(), "DDLaunch+ - Could not load actionDefinitions.json",
+                        MB_ICONWARNING | MB_OK);
+        }
+    }
+
+    // Actions don't appear in the list, so only repaint when devices changed.
+    if (reloadConn && g_hListView) {
         PopulateListView(g_hListView, g_actions);
     }
 }
@@ -797,98 +1150,185 @@ static void ReloadAllData(HWND hWnd) {
 static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& actions) {
     if (index < 0 || index >= (int)g_devices.size()) return;
     const Device& dev = g_devices[index];
-    std::wstring type = ToUpper(dev.type);
-	
-    // std::optional<std::wstring> 
-	std::wstring cmd = (std::wstring)findCommandByAction(actions, type).value_or(L"Default");
-	std::wstring args = (std::wstring)findArgsByAction(actions, type).value_or(L"Default");
-	LaunchSomething(cmd, args, dev.host); 
+    const std::wstring type = ToUpper(dev.type);
+    const std::wstring hostLabel = dev.host.empty() ? std::wstring(L"(no host)") : dev.host;
+
+    // B3: previously an unknown type fell back to cmd = args = L"Default",
+    // so ShellExecute tried to run a program called "Default" and failed
+    // silently. Now each problem gets a specific message.
+    if (type.empty()) {
+        MessageBoxW(hWnd,
+            (L"\"" + hostLabel + L"\" has no type.\n\n"
+             L"Add a \"type\" (for example \"RDP\", \"SSH\" or \"HTTPS\") to this entry "
+             L"in connections.json.").c_str(),
+            L"DDLaunch+ - No type", MB_ICONWARNING | MB_OK);
+        return;
+    }
+
+    const Action* action = findAction(actions, type);
+    if (!action) {
+        std::wstring msg = L"No action is defined for type \"" + dev.type + L"\" (host \"" + hostLabel + L"\").\n\n";
+        if (const Action* nearMiss = findActionIgnoreCase(actions, type)) {
+            msg += L"actionDefinitions.json has an action named \"" + nearMiss->action +
+                   L"\", but action names must be written in UPPER CASE. Rename it to \"" + type + L"\".";
+        } else {
+            msg += L"Add an entry with \"action\": \"" + type + L"\" to actionDefinitions.json, "
+                   L"or change this connection's type in connections.json.";
+            if (!actions.empty()) {
+                msg += L"\n\nDefined actions:";
+                for (const Action& a : actions) {
+                    msg += L" " + a.action;
+                }
+            }
+        }
+        MessageBoxW(hWnd, msg.c_str(), L"DDLaunch+ - Unknown type", MB_ICONWARNING | MB_OK);
+        return;
+    }
+
+    if (action->command.empty()) {
+        MessageBoxW(hWnd,
+            (L"The \"" + type + L"\" action in actionDefinitions.json has an empty \"command\".").c_str(),
+            L"DDLaunch+ - No command", MB_ICONWARNING | MB_OK);
+        return;
+    }
+
+    std::wstring file, params;
+    const DWORD err = LaunchSomething(hWnd, action->command, action->args, dev.host, file, params);
+    ReportLaunchFailure(hWnd, err,
+        L"\"" + hostLabel + L"\" (type " + type + L")", file, params,
+        L"Check the \"command\" and \"args\" for " + type + L" in actionDefinitions.json.");
+}
+
+// ---------------------------------------------------------------------------
+// Layout (all values are 96-DPI design units, scaled with Dpi::Scale)
+// ---------------------------------------------------------------------------
+namespace Layout {
+const int BTN_H       = 24;   // button height
+const int BTN_MIN_W   = 250;  // minimum button width
+const int BTN_PAD_X   = 24;   // horizontal padding added to measured text
+const int GAP         = 10;   // gap between buttons in a row
+const int MARGIN      = 6;    // margin around the button area
+const int ROW_GAP     = 6;    // gap between the two button rows
+const int MIN_LIST_H  = 80;   // smallest list height allowed by resizing
+const int COL_W[3]    = { 200, 100, 300 };  // initial column widths
+const int WINDOW_W    = 600;  // initial window size
+const int WINDOW_H    = 400;
+}
+
+static int S(int designValue) { return Dpi::Scale(designValue, g_dpi); }
+
+// Width of the widest button caption in the current font, plus padding, but
+// never less than BTN_MIN_W. Stops long captions (e.g. "Launch RDP
+// connection for host not in this list") being clipped at larger fonts.
+static int MeasureButtonWidth(HWND hWnd) {
+    int widest = 0;
+    HDC hdc = GetDC(hWnd);
+    if (hdc) {
+        HGDIOBJ old = SelectObject(hdc, g_hFont ? g_hFont : GetStockObject(DEFAULT_GUI_FONT));
+        const HWND buttons[] = { g_hBtnRDP, g_hBtnEditActions, g_hBtnEditConn };
+        for (HWND b : buttons) {
+            if (!b) continue;
+            wchar_t text[256] = {};
+            const int len = GetWindowTextW(b, text, 256);
+            SIZE sz = {};
+            if (GetTextExtentPoint32W(hdc, text, len, &sz) && sz.cx > widest) {
+                widest = sz.cx;
+            }
+        }
+        SelectObject(hdc, old);
+        ReleaseDC(hWnd, hdc);
+    }
+    return (std::max)(S(Layout::BTN_MIN_W), widest + S(Layout::BTN_PAD_X));
+}
+
+static int ButtonAreaHeight() {
+    return S(Layout::BTN_H) * 2 + S(Layout::ROW_GAP) + S(Layout::MARGIN) * 2;
+}
+
+// Apply the current DPI: (re)create the font, set it on every control and
+// re-measure the buttons. Called on WM_CREATE and WM_DPICHANGED.
+static void ApplyDpi(HWND hWnd) {
+    HFONT newFont = Dpi::CreateUiFont(g_dpi);
+    const HWND controls[] = { g_hListView, g_hBtnRDP, g_hBtnEditActions,
+                              g_hBtnEditConn, g_hBtnRun, g_hBtnExit };
+    for (HWND c : controls) {
+        if (c) {
+            SendMessageW(c, WM_SETFONT,
+                         reinterpret_cast<WPARAM>(newFont ? newFont : GetStockObject(DEFAULT_GUI_FONT)),
+                         TRUE);
+        }
+    }
+    if (g_hFont) {
+        DeleteObject(g_hFont);  // only after no control uses it any more
+    }
+    g_hFont = newFont;
+    g_btnW  = MeasureButtonWidth(hWnd);
+}
+
+static HWND CreateButton(HWND hWnd, const wchar_t* text, int id) {
+    return CreateWindowExW(
+        0, L"BUTTON", text,
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        0, 0, 0, 0,
+        hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
+}
+
+// Launch the selected list entry (double-click, or Enter on the list).
+static void ActivateSelection(HWND hWnd) {
+    int sel = ListView_GetNextItem(g_hListView, -1, LVNI_SELECTED);
+    if (sel >= 0) OnItemActivated(hWnd, sel, g_actions);
 }
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
-        // Create ListView
+        g_dpi = Dpi::ForWindow(hWnd);
+
+        // Create ListView (WS_TABSTOP so Tab can reach it)
         g_hListView = CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
             0, 0, 0, 0,
             hWnd, (HMENU)IDC_LISTVIEW, GetModuleHandleW(nullptr), nullptr);
 
         ListView_SetExtendedListViewStyle(g_hListView,
-            LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES);
+            LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
 
-        // Add columns
+        // Add columns (widths scaled for the current DPI)
         LVCOLUMNW lvc = {};
         lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
         lvc.fmt  = LVCFMT_LEFT;
 
-        lvc.iSubItem = 0; lvc.cx = 200; lvc.pszText = (LPWSTR)L"Resource (Host, Drive, or Shell Item)";
+        lvc.iSubItem = 0; lvc.cx = S(Layout::COL_W[0]); lvc.pszText = (LPWSTR)L"Resource (Host, Drive, or Shell Item)";
         ListView_InsertColumn(g_hListView, 0, &lvc);
 
-        lvc.iSubItem = 1; lvc.cx = 100; lvc.pszText = (LPWSTR)L"Type";
+        lvc.iSubItem = 1; lvc.cx = S(Layout::COL_W[1]); lvc.pszText = (LPWSTR)L"Type";
         lvc.fmt = LVCFMT_CENTER;
         ListView_InsertColumn(g_hListView, 1, &lvc);
 
-        lvc.iSubItem = 2; lvc.cx = 300; lvc.pszText = (LPWSTR)L"Description";
+        lvc.iSubItem = 2; lvc.cx = S(Layout::COL_W[2]); lvc.pszText = (LPWSTR)L"Description";
         lvc.fmt = LVCFMT_LEFT;
         ListView_InsertColumn(g_hListView, 2, &lvc);
 
-        // Load data (connections.json + actionDefinitions.json)
-        ReloadAllData(hWnd);
+        // Buttons are created in on-screen reading order, which is also the
+        // Tab order: top row left-to-right, then bottom row left-to-right.
+        //   [ Launch RDP ... ]        [ Edit actionDefinitions.json ]
+        //   [ Edit connections.json ] [ Run... ] [ Exit ]
+        g_hBtnRDP         = CreateButton(hWnd, L"Launch RDP connection for host not in this list", IDC_BTN_RDP);
+        g_hBtnEditActions = CreateButton(hWnd, L"Edit actionDefinitions.json", IDC_BTN_EDIT_ACTIONS);
+        g_hBtnEditConn    = CreateButton(hWnd, L"Edit connections.json", IDC_BTN_EDIT_CONN);
+        g_hBtnRun         = CreateButton(hWnd, L"Run...", IDC_BTN_RUN);
+        g_hBtnExit        = CreateButton(hWnd, L"Exit", IDC_BTN_EXIT);
 
-        // Create "Launch RDP" button
-        g_hBtnRDP = CreateWindowExW(
-            0, L"BUTTON", L"Launch RDP connection for host not in this list",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hWnd, (HMENU)IDC_BTN_RDP, GetModuleHandleW(nullptr), nullptr);
+        // DPI-correct font on every control, and button width to fit text
+        ApplyDpi(hWnd);
 
-        // Match the ListView font
-        SendMessageW(g_hBtnRDP, WM_SETFONT,
-            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
+        // Load data (connections.json + actionDefinitions.json). Forced here;
+        // the WM_ACTIVATE that follows ShowWindow sees unchanged stamps and
+        // skips a second load.
+        ReloadAllData(hWnd, true);
 
-        // Create "Edit connections.json" button
-        g_hBtnEditConn = CreateWindowExW(
-            0, L"BUTTON", L"Edit connections.json",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hWnd, (HMENU)IDC_BTN_EDIT_CONN, GetModuleHandleW(nullptr), nullptr);
-
-        SendMessageW(g_hBtnEditConn, WM_SETFONT,
-            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-
-        // Create "Edit actionDefinitions.json" button
-        g_hBtnEditActions = CreateWindowExW(
-            0, L"BUTTON", L"Edit actionDefinitions.json",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hWnd, (HMENU)IDC_BTN_EDIT_ACTIONS, GetModuleHandleW(nullptr), nullptr);
-
-        SendMessageW(g_hBtnEditActions, WM_SETFONT,
-            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-
-        // Create "Run..." button (opens the Windows Run dialog)
-        g_hBtnRun = CreateWindowExW(
-            0, L"BUTTON", L"Run...",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hWnd, (HMENU)IDC_BTN_RUN, GetModuleHandleW(nullptr), nullptr);
-
-        SendMessageW(g_hBtnRun, WM_SETFONT,
-            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-
-        // Create "Exit" button
-        g_hBtnExit = CreateWindowExW(
-            0, L"BUTTON", L"Exit",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-            0, 0, 0, 0,
-            hWnd, (HMENU)IDC_BTN_EXIT, GetModuleHandleW(nullptr), nullptr);
-
-        SendMessageW(g_hBtnExit, WM_SETFONT,
-            (WPARAM)GetStockObject(DEFAULT_GUI_FONT), TRUE);
-
-
+        g_hLastFocus = g_hListView;
         return 0;
     }
 
@@ -896,54 +1336,98 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         RECT rc;
         GetClientRect(hWnd, &rc);
 
-        const int BTN_H   = 24;
-        const int BTN_W   = 250;
-        const int GAP     = 10;
-        const int MARGIN  = 6;
-        const int ROW_GAP = 6;
+        const int btnH   = S(Layout::BTN_H);
+        const int btnW   = g_btnW;
+        const int gap    = S(Layout::GAP);
+        const int margin = S(Layout::MARGIN);
+        const int rowGap = S(Layout::ROW_GAP);
 
-        // Two rows of two buttons now occupy the bottom of the window.
-        const int BUTTON_AREA_H = BTN_H * 2 + ROW_GAP + MARGIN * 2;
+        // ListView fills everything above the two button rows
+        MoveWindow(g_hListView, 0, 0, rc.right, rc.bottom - ButtonAreaHeight(), TRUE);
 
-        // ListView fills everything above the button rows
-        MoveWindow(g_hListView,
-            0, 0,
-            rc.right, rc.bottom - BUTTON_AREA_H,
-            TRUE);
+        const int totalW = btnW * 2 + gap;
+        const int startX = (rc.right - totalW) / 2;
+        const int rightX = startX + btnW + gap;
+        const int row2Y  = rc.bottom - btnH - margin;
+        const int row1Y  = row2Y - rowGap - btnH;
 
-        int totalW = BTN_W * 2 + GAP;
-        int startX = (rc.right - totalW) / 2;
-
-        // Bottom row: Launch RDP / Exit (unchanged pair, moved up one row)
-        int row2Y = rc.bottom - BTN_H - MARGIN;
-        int row1Y = row2Y - ROW_GAP - BTN_H;
-
-        MoveWindow(g_hBtnRDP,  startX,               row1Y, BTN_W, BTN_H, TRUE);
-        MoveWindow(g_hBtnEditActions, startX + BTN_W + GAP, row1Y, BTN_W, BTN_H, TRUE);
+        // Top row: Launch RDP | Edit actionDefinitions.json
+        MoveWindow(g_hBtnRDP,         startX, row1Y, btnW, btnH, TRUE);
+        MoveWindow(g_hBtnEditActions, rightX, row1Y, btnW, btnH, TRUE);
 
         // Bottom row: Edit connections.json | Run... | Exit
         // Run and Exit split the right-hand slot so both rows stay aligned.
-        const int HALF_W = (BTN_W - GAP) / 2;
-        int rightX = startX + BTN_W + GAP;
-        MoveWindow(g_hBtnEditConn, startX,                row2Y, BTN_W,  BTN_H, TRUE);
-        MoveWindow(g_hBtnRun,      rightX,                row2Y, HALF_W, BTN_H, TRUE);
-        MoveWindow(g_hBtnExit,     rightX + HALF_W + GAP, row2Y, HALF_W, BTN_H, TRUE);
+        const int halfW = (btnW - gap) / 2;
+        MoveWindow(g_hBtnEditConn, startX,               row2Y, btnW,  btnH, TRUE);
+        MoveWindow(g_hBtnRun,      rightX,               row2Y, halfW, btnH, TRUE);
+        MoveWindow(g_hBtnExit,     rightX + halfW + gap, row2Y, halfW, btnH, TRUE);
 
         return 0;
     }
 
+    case WM_GETMINMAXINFO: {
+        // Keep the window large enough that the buttons never overlap and
+        // some of the list stays visible (also fixes R4).
+        if (g_hBtnRDP) {
+            auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            const int clientW = g_btnW * 2 + S(Layout::GAP) + S(Layout::MARGIN) * 2;
+            const int clientH = ButtonAreaHeight() + S(Layout::MIN_LIST_H);
+            const SIZE minSize = Dpi::WindowSizeForClient(hWnd, clientW, clientH, g_dpi);
+            mmi->ptMinTrackSize.x = minSize.cx;
+            mmi->ptMinTrackSize.y = minSize.cy;
+        }
+        return 0;
+    }
+
+    case WM_DPICHANGED: {
+        // Window moved to a monitor with a different DPI (or the user changed
+        // scaling). Rescale fonts, columns and buttons, then take the size
+        // Windows suggests.
+        const UINT oldDpi = g_dpi;
+        g_dpi = LOWORD(wParam);
+
+        ApplyDpi(hWnd);
+        for (int col = 0; col < 3; ++col) {
+            const int w = ListView_GetColumnWidth(g_hListView, col);
+            ListView_SetColumnWidth(g_hListView, col,
+                MulDiv(w, static_cast<int>(g_dpi), static_cast<int>(oldDpi)));
+        }
+
+        const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+        SetWindowPos(hWnd, nullptr, suggested->left, suggested->top,
+                     suggested->right - suggested->left, suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+    }
+
     case WM_COMMAND: {
-        if (LOWORD(wParam) == IDC_BTN_RDP) {
-            ShellExecuteW(nullptr, L"open", L"mstsc.exe",
-                nullptr, nullptr, SW_SHOWNORMAL);
-        } else if (LOWORD(wParam) == IDC_BTN_RUN) {
+        switch (LOWORD(wParam)) {
+        case IDOK:
+            // IsDialogMessageW turns Enter into IDOK when the focused control
+            // isn't a push button. On the list that means "launch".
+            if (GetFocus() == g_hListView) {
+                ActivateSelection(hWnd);
+            }
+            break;
+        case IDCANCEL:
+            // Esc: deliberately ignored so it can't close the launcher.
+            break;
+        case IDC_BTN_RDP:
+            ReportLaunchFailure(hWnd, ShellOpen(hWnd, L"mstsc.exe", L""),
+                L"Remote Desktop Connection", L"mstsc.exe", L"", L"");
+            break;
+        case IDC_BTN_RUN:
             ShowRunDialog(hWnd);
-        } else if (LOWORD(wParam) == IDC_BTN_EXIT) {
+            break;
+        case IDC_BTN_EXIT:
             DestroyWindow(hWnd);
-        } else if (LOWORD(wParam) == IDC_BTN_EDIT_CONN) {
+            break;
+        case IDC_BTN_EDIT_CONN:
             OpenJsonFileForEditing(hWnd, GetConnectionsJsonPath());
-        } else if (LOWORD(wParam) == IDC_BTN_EDIT_ACTIONS) {
+            break;
+        case IDC_BTN_EDIT_ACTIONS:
             OpenJsonFileForEditing(hWnd, GetActionsJsonPath());
+            break;
         }
         return 0;
     }
@@ -951,12 +1435,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_NOTIFY: {
         LPNMHDR pnmh = reinterpret_cast<LPNMHDR>(lParam);
         if (pnmh->idFrom == IDC_LISTVIEW) {
+            // NM_RETURN only arrives if the list itself handles Enter; with
+            // IsDialogMessageW it normally comes through IDOK instead. A key
+            // press produces one or the other, never both.
             if (pnmh->code == NM_DBLCLK || pnmh->code == NM_RETURN) {
-                int sel = ListView_GetNextItem(g_hListView, -1, LVNI_SELECTED);
-                if (sel >= 0) OnItemActivated(hWnd, sel, g_actions);
+                ActivateSelection(hWnd);
             } else if (pnmh->code == LVN_COLUMNCLICK) {
                 LPNMLISTVIEW pnmlv = reinterpret_cast<LPNMLISTVIEW>(lParam);
-                SortDevices(pnmlv->iSubItem);
+                ToggleSortColumn(pnmlv->iSubItem);
                 PopulateListView(g_hListView, g_actions);
                 UpdateHeaderSortArrow(g_hListView, g_sortCol, g_sortAsc);
             }
@@ -965,17 +1451,38 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     }
 
     case WM_ACTIVATE: {
-        // Reload connections.json / actionDefinitions.json whenever the main
-        // window regains focus, so edits made in Notepad (opened via the
-        // "Edit connections.json" / "Edit actionDefinitions.json" buttons)
-        // are picked up as soon as the user switches back, with no restart.
-        if (LOWORD(wParam) != WA_INACTIVE && g_hListView) {
-            ReloadAllData(hWnd);
+        if (LOWORD(wParam) == WA_INACTIVE) {
+            // Remember which control had focus so it can be restored.
+            HWND focus = GetFocus();
+            if (focus && IsChild(hWnd, focus)) {
+                g_hLastFocus = focus;
+            }
+        } else if (g_hListView) {
+            // Reload connections.json / actionDefinitions.json when the main
+            // window regains focus, so edits made in Notepad are picked up
+            // with no restart. Only re-reads files whose last-write time or
+            // size changed (B1).
+            ReloadAllData(hWnd, false);
+
+            // Returning 0 without DefWindowProc means Windows won't set focus
+            // for us; put it back on the control that last had it.
+            SetFocus(g_hLastFocus && IsWindow(g_hLastFocus) ? g_hLastFocus : g_hListView);
         }
         return 0;
     }
 
+    case WM_SETFOCUS:
+        // E.g. restoring from minimized: forward focus to a child control.
+        if (g_hListView) {
+            SetFocus(g_hLastFocus && IsWindow(g_hLastFocus) ? g_hLastFocus : g_hListView);
+        }
+        return 0;
+
     case WM_DESTROY:
+        if (g_hFont) {
+            DeleteObject(g_hFont);
+            g_hFont = nullptr;
+        }
         PostQuitMessage(0);
         return 0;
     }
@@ -986,47 +1493,65 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 // WinMain
 // ---------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
-    // Enable visual styles / Common Controls v6
-    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES };
+    // Must run before any window is created.
+    Dpi::EnableDpiAwareness();
+
+    // Common Controls v6 (visual styles) -- requires the manifest dependency
+    // declared at the top of this file.
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);
 
-    // Register window class
+    // Register window class. Icons are loaded at the exact sizes Windows
+    // wants (large and small) so they aren't blurred by scaling.
     WNDCLASSEXW wc    = {};
     wc.cbSize         = sizeof(wc);
     wc.lpfnWndProc    = WndProc;
     wc.hInstance      = hInst;
     wc.hCursor        = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hbrBackground  = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground  = (HBRUSH)(COLOR_BTNFACE + 1);  // dialog-style background behind the buttons
     wc.lpszClassName  = L"DDLaunchClass";
-    wc.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_ICON1));
-    wc.hIconSm = wc.hIcon; 
+    wc.hIcon   = static_cast<HICON>(LoadImageW(hInst, MAKEINTRESOURCEW(IDI_ICON1), IMAGE_ICON,
+                     GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(hInst, MAKEINTRESOURCEW(IDI_ICON1), IMAGE_ICON,
+                     GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_DEFAULTCOLOR));
     RegisterClassExW(&wc);
- 
+
     std::wstring windowTitle = std::wstring(L"DDLaunch+ ") + VERSION + L" - to launch a resource, doubleclick a lineitem below.";
 
+    // WS_EX_CONTROLPARENT lets the dialog manager (IsDialogMessageW) treat
+    // this window like a dialog for Tab navigation.
     HWND hWnd = CreateWindowExW(
-        0, 
-		L"DDLaunchClass", 
-		windowTitle.c_str(),
+        WS_EX_CONTROLPARENT,
+        L"DDLaunchClass",
+        windowTitle.c_str(),
         WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, 
-		CW_USEDEFAULT, 
-		600, 
-		400,
-        nullptr, 
-		nullptr, 
-		hInst, 
-		nullptr);
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        Layout::WINDOW_W,
+        Layout::WINDOW_H,
+        nullptr,
+        nullptr,
+        hInst,
+        nullptr);
 
     if (!hWnd) return 1;
+
+    // The window was created at 96-DPI size; scale it for the monitor it
+    // landed on (WM_GETMINMAXINFO still enforces the minimum size).
+    SetWindowPos(hWnd, nullptr, 0, 0, S(Layout::WINDOW_W), S(Layout::WINDOW_H),
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
 
+    // IsDialogMessageW gives the main window dialog-style keyboard handling:
+    // Tab/Shift+Tab, arrow keys between buttons, Enter/Space on buttons.
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        if (!IsDialogMessageW(hWnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
     return (int)msg.wParam;
 }

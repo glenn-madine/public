@@ -1,38 +1,63 @@
-# DDLaunch+ (Data-Driven Launcher+) v2.0.0
+# DDLaunch+ (Data-Driven Launcher+) v2.1.0
 
-A small, native Win32 C++ desktop launcher that lists remote resources (hosts, drives, shell items, URLs) from a JSON file and opens each one with a tool chosen by its **type**. Which tool handles which type is also defined in JSON, so new connection types can be added without recompiling.
+A small, native Win32 C++ desktop launcher. It lists remote resources (hosts, drives, shell items, URLs) from a JSON file and opens each one with a tool chosen by its **type**. Which tool handles which type is also defined in JSON, so you can add new connection types without recompiling.
 
 | | |
 |---|---|
 | **Author** | Glenn Madine |
-| **Version** | 2.0.0 (release date 09/25/2026) |
-| **Language / API** | C++17, Win32 API, Common Controls, COM (Shell.Application) |
+| **Version** | 2.1.0 (release date 09/25/2026) |
+| **Language / API** | C++17, Win32 API, Common Controls v6, COM (Shell.Application) |
 | **Compiler** | Microsoft C++ 19.51 (MSVC) |
 | **Dependencies** | Windows SDK, nlohmann/json (single header `json.hpp`), `resource.h` / `DDLaunch.res` |
-| **Source file** | `DDLaunch.cpp` (~1,030 lines) |
+| **Source file** | `DDLaunch.cpp` (~1,560 lines) |
+| **Minimum OS** | Windows Vista or later; best on Windows 10 1703+ (Per-Monitor V2 DPI) |
 
 ---
 
 ## 1. What it does
 
-When started, DDLaunch+ opens a resizable 600 × 400 window with:
+When started, DDLaunch+ opens a resizable window, sized for the DPI of the monitor it opens on. The window contains:
 
 - **A report-style list view** with three sortable columns: *Resource (Host, Drive, or Shell Item)*, *Type*, and *Description*.
-- **Five buttons** in two rows along the bottom:
+- **Five buttons** in two rows, sized to fit their captions:
 
 | Button | Behavior |
 |---|---|
-| Launch RDP connection for host not in this list | Starts `mstsc.exe` with no arguments |
+| Launch RDP connection for host not in this list | Starts `mstsc.exe` with no arguments; reports an error if it can't start |
 | Edit actionDefinitions.json | Opens the actions file in Notepad |
 | Edit connections.json | Opens the connections file in Notepad |
 | Run... | Shows the standard Windows Run dialog (same as Win+R) |
 | Exit | Closes the application |
 
-Double-clicking a row (or pressing **Enter** on it) launches that resource. The app looks up the row's **Type** (upper-cased) in `actionDefinitions.json` and runs the matching `command` with `args + host` as the parameters. For URL-style commands (`https://`, `http://`, `ftp://`, `file://`, `mailto:`, `tel:`) it instead opens `command + host` as a URL, so the default browser or handler opens it.
+**Launching.** Double-click a row, or press **Enter** on it. The app upper-cases the row's **Type** and looks it up in `actionDefinitions.json`:
 
-Clicking a column header sorts the list by that column (case-insensitive); clicking it again reverses the order. A sort arrow is shown in the header.
+- If the action's `command` starts with a URI scheme (`https://`, `file:///`, `ssh://`, `vnc://`, `mailto:`, `ms-settings:`…), the app opens `command + host` with the program registered for that scheme.
+- Otherwise the app runs `command` as a program, with `args + host` as its parameters.
 
-Whenever the window regains focus, both JSON files are reloaded from disk, so edits made in Notepad take effect as soon as you switch back — no restart needed.
+**Error messages.** The app shows a specific message when:
+
+- the entry has no type
+- no action matches the type (the message also says when the name matches except for upper/lower case)
+- the action's command is empty
+- the launch fails (the message includes the Windows error code and text)
+
+**Sorting.** Click a column header to sort by that column, ignoring case. Click it again to reverse the order. The sort, and the arrow in the header, are kept when the data reloads.
+
+**Hot reload.** When you switch back to the window, it reloads a JSON file only if the file's last-write time or size has changed. Edits made in Notepad show up right away, and an invalid file reports its error once.
+
+**Keyboard.**
+
+| Key | Action |
+|---|---|
+| Tab / Shift+Tab | Move between the list and the buttons |
+| Arrow keys | Move within the list |
+| Enter | Launch the selected row, or press the focused button |
+| Space | Press the focused button |
+| Esc | Ignored on purpose, so it can't close the launcher |
+
+When the window is re-activated, focus goes back to the control that last had it.
+
+**High DPI.** The app runs Per-Monitor V2 DPI aware. The font (the system message font, normally Segoe UI 9pt), column widths, buttons and margins scale with the monitor, and they update live when the window moves to another monitor. The window has a minimum size so the buttons never overlap.
 
 ---
 
@@ -45,17 +70,17 @@ Both files live in a per-user folder:
 %USERPROFILE%\DDLaunch\connections.json
 ```
 
-If `%USERPROFILE%` is not set, the app falls back to the shell's Profile known folder, and if that also fails, to the folder that contains `DDLaunch.exe`. The folder and both files are created automatically on first run. Existing files are never overwritten.
+If `%USERPROFILE%` is not set, the app uses the shell's Profile known folder instead. If that also fails, it uses the folder that contains `DDLaunch.exe`. The folder and both files are created on first run. Existing files are never overwritten.
 
 ### 2.1 actionDefinitions.json
 
-Must be a top-level JSON **array**. Every entry needs all three keys, or the file fails to load.
+The file must be a top-level JSON **array**. Every entry needs all three keys, or the file fails to load (the app then keeps the actions it last loaded successfully).
 
 | Key | Meaning |
 |---|---|
-| `action` | Name matched against a connection's `type` (the type is upper-cased first, so write actions in UPPER CASE) |
-| `args` | Text placed before the host on the command line (e.g. `" /v:"`) |
-| `command` | Executable path, or a URL prefix such as `https://` |
+| `action` | Name matched against a connection's `type`. The type is upper-cased before matching, so write action names in UPPER CASE |
+| `args` | Text placed before the host on the command line (e.g. `" /v:"`). Not used for URL commands |
+| `command` | Path to a program, or a URL prefix with any scheme (e.g. `https://`, `vnc://`) |
 
 Default content written on first run:
 
@@ -68,11 +93,17 @@ Default content written on first run:
 ]
 ```
 
+Example of a custom action, which needs no recompile:
+
+```json
+{ "action": "VNC", "args": "", "command": "vnc://" }
+```
+
+How the app tells a URL from a program path: it looks for a scheme as defined by RFC 3986 (`ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"`). Schemes must be at least two characters long, so drive letters such as `C:\...` are still treated as program paths.
+
 ### 2.2 connections.json
 
-Accepts either a flat array of device objects or an object of named groups (each group is an object or an array of objects). Each device can have `host`, `type`, and `description` (all strings, all optional). The default is an empty array `[]`.
-
-Flat array:
+The file can be a flat array of device objects, or an object of named groups (each group is an object or an array of objects). Each device can have `host`, `type`, and `description` (all strings, all optional). The default is an empty array `[]`.
 
 ```json
 [
@@ -82,18 +113,14 @@ Flat array:
 ]
 ```
 
-Grouped:
+Grouped form (group names are not shown; all devices are merged into one list):
 
 ```json
 {
-    "Servers": [
-        { "host": "ca1.ynext.corp", "type": "RDP", "description": "Certificate Authority" }
-    ],
-    "Web": { "host": "intranet.ynext.corp", "type": "HTTPS", "description": "Intranet" }
+    "Servers": [ { "host": "ca1.ynext.corp", "type": "RDP", "description": "Certificate Authority" } ],
+    "Web":       { "host": "intranet.ynext.corp", "type": "HTTPS", "description": "Intranet" }
 }
 ```
-
-Group names are not shown in the UI; all devices are merged into one list.
 
 ---
 
@@ -105,94 +132,105 @@ From a *Developer Command Prompt for VS*:
 
 ```bat
 rc DDLaunch.rc
-CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 DDLaunch.cpp DDLaunch.res /Fe:DDLaunch.exe /link /SUBSYSTEM:WINDOWS comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib
+CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 DDLaunch.cpp DDLaunch.res /Fe:DDLaunch.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:EMBED comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib
 ```
 
-Header sort arrows (`HDF_SORTUP` / `HDF_SORTDOWN`) and visual styles need Common Controls v6, so the resource file should embed an application manifest (or see recommendation R6 below).
+**Manifest.** The source declares the Common Controls v6 dependency with `#pragma comment(linker, "/manifestdependency:…")`, and `/MANIFEST:EMBED` embeds the manifest in the .exe. If `DDLaunch.rc` also contains its own `RT_MANIFEST` resource, remove one of the two to avoid a duplicate-resource link error.
+
+**DPI.** DPI awareness is set at run time by `Dpi::EnableDpiAwareness()`, so no manifest entry is needed for it. If a manifest does declare DPI awareness, the manifest wins.
 
 ---
 
 ## 4. Code architecture
 
-The file is organized top to bottom as follows:
-
 | Section | Key functions / types | Purpose |
 |---|---|---|
-| Constants | `VERSION`, `IDC_*`, `COL_*` | Control IDs and column indexes |
+| Header / constants | `VERSION`, `IDC_*`, `COL_*`, manifest pragma | Version, control IDs, column indexes, Common Controls v6 dependency |
 | UTF-8 ↔ UTF-16 | `Utf8ToWide`, `WideToUtf8` | Convert between JSON (UTF-8) and Win32 wide strings |
 | Action model | `struct Action`, `from_json`, `to_json` | nlohmann/json mapping for action entries |
 | File I/O | `ReadFileUtf8` | Reads a whole file via `CreateFileW`/`ReadFile` (supports Unicode paths) |
-| Action lookup | `loadActions`, `findCommandByAction`, `findArgsByAction` | Parse the actions array and look up by name |
+| Action lookup | `loadActions`, `findAction`, `findActionIgnoreCase` | Parse the actions array; a single lookup that returns `const Action*` |
 | Device model | `struct Device`, `LoadConnections` | Parse connections (array or grouped object) |
-| Paths | `GetUserProfileDir`, `GetDataDir`, `Get*JsonPath` | Resolve `%USERPROFILE%\DDLaunch` with fallbacks |
-| First-run setup | `EnsureDataFiles`, `CreateFileWithDefaultContent` | Create folder and seed default JSON (`CREATE_NEW`, race-safe) |
+| Paths | `GetUserProfileDir`, `GetDataDir`, `Get*JsonPath` | Resolve `%USERPROFILE%\DDLaunch`, with fallbacks |
+| First-run setup | `EnsureDataFiles`, `CreateFileWithDefaultContent` | Create the folder and write the default JSON (`CREATE_NEW`, safe if two instances race) |
 | Editing | `OpenJsonFileForEditing` | Opens a config file in Notepad |
-| Launching | `LaunchSomething`, `OnItemActivated` | URL vs. executable dispatch via `ShellExecuteW` |
+| URL detection | `StartsWithUrlScheme` | Generic RFC 3986 scheme check (ignores drive letters) |
+| Launching | `ShellOpen`, `LaunchSomething`, `ReportLaunchFailure`, `GetErrorText` | `ShellExecuteExW` with `SEE_MASK_FLAG_NO_UI`; clear error messages |
 | Run dialog | `ShowRunDialog` | `IShellDispatch::FileRun()` via COM |
-| Sorting | `SortDevices`, `UpdateHeaderSortArrow` | Column sort with direction toggle and header arrow |
-| UI | `PopulateListView`, `ReloadAllData`, `WndProc` | List view, layout, commands, notifications, focus reload |
-| Entry point | `wWinMain` | Common controls init, window class, message loop |
+| DPI helpers | `namespace Dpi` | Enable awareness, get DPI per window, scale values, create the UI font, adjust window rect (newer APIs loaded dynamically) |
+| Sorting | `ApplyCurrentSort`, `ToggleSortColumn`, `UpdateHeaderSortArrow` | Stable sort that is re-applied after every reload |
+| Change detection | `FileStamp`, `GetFileStamp`, `ReloadAllData(hWnd, force)` | Reload a file only when it changed; guarded against re-entry while an error box is open |
+| Item activation | `OnItemActivated`, `ActivateSelection` | Validate type and action, then launch |
+| Layout | `namespace Layout`, `S()`, `MeasureButtonWidth`, `ApplyDpi`, `CreateButton` | Sizes in 96-DPI units, scaled per monitor; buttons sized to fit their text |
+| Window procedure | `WndProc` | Create, size, min/max size, DPI change, commands, notifications, activation/focus |
+| Entry point | `wWinMain` | DPI awareness, common controls, window class, `IsDialogMessageW` message loop |
 
 ### Launch flow
 
-1. User double-clicks a row or presses Enter → `WM_NOTIFY` (`NM_DBLCLK` / `NM_RETURN`).
-2. `OnItemActivated` upper-cases the device type and looks up `command` and `args`.
-3. `LaunchSomething` checks whether `command` starts with a known URL scheme:
-   - **Yes:** `ShellExecuteW("open", command + host)`
-   - **No:** `ShellExecuteW("open", command, args + host)`
+1. The user double-clicks a row, or presses Enter on it. Enter arrives as `IDOK` via `IsDialogMessageW`, or as `NM_RETURN`.
+2. `OnItemActivated` checks that the entry has a type, that an action exists for it (hinting about a case mismatch if needed), and that the command isn't empty.
+3. `LaunchSomething` uses `StartsWithUrlScheme(command)` to choose one of two calls:
+   - **URL:** `ShellExecuteExW("open", command + host)`
+   - **Program:** `ShellExecuteExW("open", command, args + host)`
+4. On failure, `ReportLaunchFailure` shows the host, type, command, parameters, and the Windows error code and text. A cancelled UAC prompt is not reported as an error.
+
+### Reload flow
+
+1. `WM_CREATE` calls `ReloadAllData(hWnd, true)`, which loads both files.
+2. On each `WM_ACTIVATE`, `ReloadAllData(hWnd, false)` compares the current `FileStamp` of each file with the stored one. If both match, it returns straight away.
+3. For each file that changed, the new stamp is recorded **before** the file is parsed, so an error is shown once per save. Devices are re-sorted with the current sort, and the list is repopulated.
 
 ### Strengths
 
-- Unicode throughout: wide Win32 APIs, UTF-8 JSON, and Win32 file I/O so profile paths with non-ASCII names work.
-- Data-driven: new launch types need only a JSON edit.
-- Safe first-run setup: `CREATE_NEW` never overwrites a file and handles a creation race.
-- Hot reload on focus makes the edit-in-Notepad workflow smooth.
-- Uses the documented `Shell.Application` COM object for the Run dialog instead of the undocumented shell32 ordinal 61, and balances `CoInitializeEx`/`CoUninitialize` correctly.
-- A bad `actionDefinitions.json` keeps the previously loaded actions instead of crashing the app.
+- **Unicode throughout:** wide Win32 APIs, UTF-8 JSON, and Win32 file I/O, so profile paths with non-ASCII names work.
+- **Data-driven:** a new launch type (including a custom URL scheme) needs only a JSON edit.
+- **Clear feedback:** every failure path produces a specific message that says what to change and where.
+- **Reload cost:** it happens only when a file changes, and it doesn't loop on errors.
+- **Keyboard:** full keyboard operation, with tab order matching the layout and focus restored on activation.
+- **High DPI:** Per-Monitor V2 with live rescaling, fallbacks for older Windows versions, and a minimum window size.
+- **Documented APIs only:** uses `Shell.Application` for the Run dialog, and loads the newer DPI APIs dynamically so the .exe still starts on older systems.
+- **Maintainable:** a version-history comment block in the header records each change.
 
 ---
 
-## 5. Analysis: issues and recommendations
+## 5. Analysis: remaining issues and recommendations
 
-Severity: **High** = user-visible bug; **Medium** = incorrect or fragile behavior; **Low** = cleanup / maintainability.
+Severity: **Medium** = incorrect or fragile behavior; **Low** = cleanup, maintainability, or minor UX.
 
-### 5.1 Bugs
+### 5.1 Behavior
 
 | # | Severity | Issue | Recommendation |
 |---|---|---|---|
-| B1 | High | **Error-dialog loop.** `ReloadAllData` runs on every `WM_ACTIVATE`. If a JSON file is invalid (for example saved mid-edit), it shows a message box; closing the box reactivates the main window, which reloads, fails, and shows the box again. The user may be unable to return to Notepad without killing the app. | Only reload when a file's last-write time has changed (track it with `GetFileAttributesExW`), or suppress reloads while an error box is open. |
-| B2 | High | **Sort order lost on reload.** Every reload (each time the window gets focus, including after launching something) replaces `g_devices` with file order, but the header arrow still shows the old sort. | After loading, re-apply the current sort (`g_sortCol`/`g_sortAsc`) without toggling direction, then populate. |
-| B3 | Medium | **Unknown types fail silently.** If a type has no matching action, `cmd` and `args` become `"Default"`, so `ShellExecuteW` tries to run a program named `Default`. The return value is ignored, so nothing visible happens. | Check the `optional` results and show a message such as "No action defined for type X". Check the `ShellExecuteW` return value (≤ 32 means failure). |
-| B4 | Medium | **`file://` check is off by one.** `prefix.substr(0, 8) == L"file://"` compares 8 characters with a 7-character string, so it only matches when the command is exactly `file://` (not `file:///...`). | Use a starts-with helper, or detect any scheme generically with `PathIsURLW` / `UrlIsW` or by finding `"://"`. This also lets custom schemes such as `vnc://` or `ssh://` work. |
-| B5 | Medium | **Case-sensitive action names.** Types are upper-cased but action names are not, so an action written as `"Rdp"` never matches. | Upper-case both sides (or use `_wcsicmp`) in the lookup. |
-| B6 | Low | **Tab key does nothing.** Buttons have `WS_TABSTOP`, but the message loop does not call `IsDialogMessageW`, so keyboard navigation between controls does not work. | Call `IsDialogMessageW(hWnd, &msg)` in the loop and add `WS_EX_CONTROLPARENT` to the main window. |
-| B7 | Low | **Double load at startup.** Data is loaded in `WM_CREATE` and again on the first `WM_ACTIVATE`. | Fixed as a side effect of B1's timestamp check. |
-| B8 | Low | **Connections cleared on read error.** If `connections.json` can't be read, the list is emptied, while a bad actions file keeps the old actions. | Keep the old device list on failure, matching the actions behavior. |
+| B5 | Medium | **Action names are still matched case-sensitively.** Types are upper-cased, but an action written as `"Rdp"` never matches. Since 2.0.3 the error message points this out, but the lookup still fails. | Match with `_wcsicmp` in `findAction` (then `findActionIgnoreCase` can be removed). |
+| B8 | Low | **Connections are cleared on a read error.** If `connections.json` can't be read or parsed, the list becomes empty, while a bad actions file keeps the old actions. | Keep the previous `g_devices` when loading fails, matching the actions behavior. |
+| B9 | Low | **Selection is lost on reload and sort.** `PopulateListView` deletes all items, so the selected row (and the keyboard focus item) resets after a column click or a reload. | Remember the selected `Device` (host + type) before repopulating and reselect it with `ListView_SetItemState` + `ListView_EnsureVisible`. |
+| B10 | Low | **Garbled non-ASCII text in JSON error messages.** `MessageBoxA(e.what())` shows UTF-8 text (which can include the file path) in the ANSI code page, so a profile name such as `C:\Users\José` displays incorrectly. | Convert with `Utf8ToWide(e.what())` and use `MessageBoxW`. |
+| B11 | Low | **Host values are appended unquoted.** A host containing spaces is split into separate command-line arguments. | Quote the host when it contains spaces (for non-URL commands). |
+| B12 | Low | **Entries without a host are still listed.** They show as blank rows and only fail on launch. | Skip them when loading, or show them with a warning marker. |
 
 ### 5.2 Dead or duplicated code
 
 | # | Item | Notes |
 |---|---|---|
-| D1 | `UsernameDialog` struct and `GetUsernamePopup()` | Never called. `GetUsernamePopup` also declares unused locals (`dlgBase`, `DlgLayout`) and has leftover design comments. Remove, or wire into the SSH action (e.g. prompt for `user@host`). |
-| D2 | `class Logger` | Never instantiated. Remove, or use it for launch/error logging. |
-| D3 | `getExeDirectory()` vs `GetExeDir()` | Two functions do the same job; only `GetExeDir()` is used. |
+| D1 | `UsernameDialog` struct and `GetUsernamePopup()` | Never called; they contain unused locals (`dlgBase`, `DlgLayout`). Remove them, or use them for SSH (e.g. prompt for `user@host`). |
+| D2 | `class Logger` | Never instantiated. Remove it, or use it to log launches and errors. |
+| D3 | `getExeDirectory()` vs `GetExeDir()` | Duplicates; only `GetExeDir()` is used. |
 | D4 | `ToWide()` vs `Utf8ToWide()`; `WStringToString()` vs `WideToUtf8()` | Duplicate conversion helpers; `WStringToString` is unused. |
-| D5 | `findCommandByAction` + `findArgsByAction` | Two linear searches for the same entry. Replace with one `findAction()` returning `const Action*`. |
-| D6 | `PopulateListView(hLV, actions)` | The `actions` parameter is not used. |
-| D7 | `to_json(Action)` | Not used (the app never writes actions); harmless. |
+| D6 | `PopulateListView(hLV, actions)`, `OnItemActivated(..., actions)` | The `actions` parameter of `PopulateListView` is unused. |
+| D7 | `to_json(Action)` | Unused (the app never writes actions); harmless. |
+| D8 | `#include <optional>`, `<fstream>`, `<sstream>` | No longer used since `findAction` replaced the `optional`-returning lookups. |
 
 ### 5.3 Build and robustness notes
 
 | # | Item | Recommendation |
 |---|---|---|
-| R1 | `#define UNICODE` / `_UNICODE` in the source *and* `/DUNICODE` on the command line | May cause warning C4005 (macro redefinition). Use `#ifndef UNICODE` guards. |
+| R1 | `#define UNICODE` / `_UNICODE` in the source *and* `/DUNICODE` on the command line | Causes warning C4005 (macro redefinition). Wrap in `#ifndef UNICODE`. |
 | R2 | `towupper` and `uintptr_t` rely on transitive includes | Add `<cwctype>` and `<cstdint>`. |
-| R3 | Fixed pixel sizes, no DPI awareness | Declare Per-Monitor V2 DPI awareness in the manifest and scale sizes with `GetDpiForWindow`. |
-| R4 | No minimum window size | Handle `WM_GETMINMAXINFO` so the buttons (which need ~520 px) don't overlap when the window is narrowed. |
-| R5 | Stale comments | `OpenJsonFileForEditing` mentions "the exe directory"; `WM_SIZE` comments describe an older button layout. |
-| R6 | Common Controls v6 depends on the `.res` manifest | Add `#pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")` so sort arrows always render. |
-| R7 | Host values are appended unquoted | A host containing spaces is split into separate arguments. Quote when needed. |
-| R8 | Window position and size are not remembered | Optionally save them to a small settings file in the data folder. |
+| R5 | Stale comment in `OpenJsonFileForEditing` ("in case the exe lives under a directory with spaces") | The files are now under `%USERPROFILE%`; update the wording. |
+| R8 | Window position and size are not remembered | Save them to a small settings file in the data folder (store DPI-independent values). |
+| R9 | Window title says "doubleclick a lineitem" | Consider "double-click a row or press Enter to launch". |
+| R10 | Initial window position | The window is scaled after `CW_USEDEFAULT` placement; on a small, high-DPI screen it may extend past the work area. Clamp to the monitor work area (`MonitorFromWindow` / `GetMonitorInfoW`). |
+| R11 | Manifest vs `.rc` | If the resource script already embeds a manifest, the pragma plus `/MANIFEST:EMBED` causes a duplicate-resource error; keep only one manifest source. |
 
 ### 5.4 Security note
 
@@ -200,14 +238,26 @@ DDLaunch+ runs whatever `command` the JSON says, with the current user's rights.
 
 ---
 
-## 6. Suggested next steps
+## 6. Version history
 
-1. Fix B1 and B2 together by adding a file-timestamp check and re-applying the sort after reload.
-2. Add a clear error message for unknown types and failed launches (B3).
-3. Replace the hard-coded scheme list with generic URL detection (B4).
-4. Remove the dead code in section 5.2, or finish the SSH username prompt.
-5. Add `IsDialogMessageW`, a manifest dependency, and DPI awareness for a more polished UI.
+| Version | Changes |
+|---|---|
+| 2.1.0 | Keyboard navigation (`IsDialogMessageW`, tab order, focus restore, Enter launches); Common Controls v6 manifest dependency; Per-Monitor V2 DPI awareness with live rescaling; buttons sized to their text; minimum window size (fixes R4); sharper icons |
+| 2.0.3 | B3: clear messages for a missing type, an unknown type, a case-mismatched action name, an empty command, and failed launches (`ShellExecuteExW` + Win32 error text); single `findAction()` lookup |
+| 2.0.2 | B4: generic RFC 3986 URL-scheme detection replaces the hard-coded list; fixes `file:///` |
+| 2.0.1 | B1: reload only when a file's timestamp or size changes (no error-box loop, single load at startup); B2: sort order re-applied after reload (stable sort) |
+| 2.0.0 | Initial documented release |
 
 ---
 
-*Documentation generated 09/25/2026 from `DDLaunch.cpp` v2.0.0.*
+## 7. Suggested next steps
+
+1. Make action lookup case-insensitive (B5).
+2. Preserve the selection across reloads and sorts (B9).
+3. Keep the old device list when `connections.json` fails to load, and use `MessageBoxW` for JSON errors (B8, B10).
+4. Remove the dead code and unused includes in section 5.2.
+5. Remember window size and position, clamped to the monitor work area (R8, R10).
+
+---
+
+*Documentation generated 09/25/2026 from `DDLaunch.cpp` v2.1.0.*
