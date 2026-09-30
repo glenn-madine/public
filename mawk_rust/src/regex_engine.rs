@@ -183,7 +183,10 @@ pub fn regex_compile(pat: &str) -> Rc<Regex> {
 enum Cont<'a> {
     Done,
     Seq { atoms: &'a [RAtom], idx: usize, parent: &'a Cont<'a> },
-    Repeat { atom: &'a RAtom, repcount: i32, parent: &'a Cont<'a> },
+    // iter_start: text position where the current iteration began; an
+    // iteration that consumed nothing may not be repeated (stops `(a*)*`
+    // from recursing forever).
+    Repeat { atom: &'a RAtom, repcount: i32, iter_start: usize, parent: &'a Cont<'a> },
 }
 
 fn atom_char_matches(a: &RAtom, c: u8) -> bool {
@@ -206,8 +209,8 @@ fn matchatoms(f: &Cont, text: &[u8], pos: usize, start: usize, anchor_end: bool)
             }
             Some(pos - start)
         }
-        Cont::Repeat { atom, repcount, parent } => {
-            try_repeat(atom, *repcount, parent, text, pos, start, anchor_end)
+        Cont::Repeat { atom, repcount, iter_start, parent } => {
+            try_repeat(atom, *repcount, pos != *iter_start, parent, text, pos, start, anchor_end)
         }
         Cont::Seq { atoms, idx, parent } => {
             if *idx == atoms.len() {
@@ -223,6 +226,7 @@ fn matchatoms(f: &Cont, text: &[u8], pos: usize, start: usize, anchor_end: bool)
 fn try_repeat(
     a: &RAtom,
     repcount: i32,
+    allow_more: bool,
     cont: &Cont,
     text: &[u8],
     pos: usize,
@@ -231,17 +235,17 @@ fn try_repeat(
 ) -> Option<usize> {
     let maxrep: i32 = if a.quant == 3 { 1 } else { -1 };
     let minrep_total: i32 = if a.quant == 2 { 1 } else { 0 };
-    if maxrep == -1 || repcount < maxrep {
+    if allow_more && (maxrep == -1 || repcount < maxrep) {
         if let AtomKind::Group(g) = &a.kind {
             for concat in &g.concats {
-                let repf = Cont::Repeat { atom: a, repcount: repcount + 1, parent: cont };
+                let repf = Cont::Repeat { atom: a, repcount: repcount + 1, iter_start: pos, parent: cont };
                 let bf = Cont::Seq { atoms: &concat.atoms, idx: 0, parent: &repf };
                 if let Some(r) = matchatoms(&bf, text, pos, start, anchor_end) {
                     return Some(r);
                 }
             }
         } else if pos < text.len() && atom_char_matches(a, text[pos]) {
-            let repf = Cont::Repeat { atom: a, repcount: repcount + 1, parent: cont };
+            let repf = Cont::Repeat { atom: a, repcount: repcount + 1, iter_start: pos, parent: cont };
             if let Some(r) = matchatoms(&repf, text, pos + 1, start, anchor_end) {
                 return Some(r);
             }
@@ -276,7 +280,7 @@ fn match_one_atom(
         }
         return None;
     }
-    try_repeat(a, 0, cont, text, pos, start, anchor_end)
+    try_repeat(a, 0, true, cont, text, pos, start, anchor_end)
 }
 
 fn regex_match_at(re: &Regex, text: &[u8], pos: usize) -> Option<usize> {
@@ -291,9 +295,18 @@ fn regex_match_at(re: &Regex, text: &[u8], pos: usize) -> Option<usize> {
 
 /// Returns Some((mstart, mlen)) byte offsets on success.
 pub fn regex_search(pat: &str, text: &str) -> Option<(usize, usize)> {
+    regex_search_at(pat, text.as_bytes(), 0)
+}
+
+/// Searches `text` starting at byte offset `from`, treating `text` as the
+/// whole subject: `^` only matches at offset 0 and `$` only at the very end.
+/// Used by gsub/split/RS so that later matches don't see a fake start of line.
+pub fn regex_search_at(pat: &str, bytes: &[u8], from: usize) -> Option<(usize, usize)> {
     let re = regex_compile(pat);
-    let bytes = text.as_bytes();
-    let mut pos = 0usize;
+    if from > bytes.len() || (re.anchor_start && from > 0) {
+        return None;
+    }
+    let mut pos = from;
     loop {
         if let Some(len) = regex_match_at(&re, bytes, pos) {
             return Some((pos, len));

@@ -1,0 +1,693 @@
+diff --git a/src/interp.rs b/src/interp.rs
+index 3b8d7a9..133a32d 100644
+--- a/src/interp.rs
++++ b/src/interp.rs
+@@ -21,6 +21,24 @@ pub struct VarSlot {
+ }
+ pub type VarRef = Rc<RefCell<VarSlot>>;
+ 
++/// Largest field index / NF value a program may create.
++pub const MAX_FIELDS: usize = 1_000_000;
++/// Largest printf/sprintf field width or precision.
++pub const MAX_PRINTF_WIDTH: i64 = 1_000_000;
++/// Stack kept in reserve below the interpreter thread's stack size; a user
++/// function call that would eat into it fails with "nesting too deep"
++/// instead of overflowing the stack.
++const STACK_RESERVE: usize = 64 * 1024 * 1024;
++
++/// An OS error message without Rust's " (os error N)" suffix, as C awks print it.
++pub fn os_err_msg(e: &std::io::Error) -> String {
++    let s = e.to_string();
++    match s.find(" (os error") {
++        Some(i) => s[..i].to_string(),
++        None => s,
++    }
++}
++
+ /// A resolved assignment target. Resolving evaluates subscripts and field
+ /// indexes exactly once, so `a[i++] += 1` and `$(n++)++` have no double
+ /// side effects.
+@@ -171,6 +189,8 @@ pub struct Interp {
+     seed: f64,
+     main_input: MainInput,
+     stdout: Box<dyn Write>,
++    /// Address near the top of the interpreter thread's stack (see run()).
++    stack_base: usize,
+ }
+ 
+ impl Interp {
+@@ -190,6 +210,7 @@ impl Interp {
+             retval: value::mkuninit(),
+             rng: Rng::new(0),
+             seed: 0.0,
++            stack_base: 0,
+             main_input: MainInput::new(),
+             // Block-buffer stdout unless it's a terminal (then stay line-buffered).
+             stdout: if std::io::stdout().is_terminal() {
+@@ -221,6 +242,7 @@ impl Interp {
+     fn die(&mut self, msg: &str) -> ! {
+         self.flush_all();
+         eprintln!("mawk: {}", msg);
++        self.io_close_all();
+         std::process::exit(2);
+     }
+ 
+@@ -348,8 +370,8 @@ impl Interp {
+             return;
+         }
+         let iu = i as usize;
+-        if iu > 1_000_000 {
+-            self.die("field index too large");
++        if iu > MAX_FIELDS {
++            self.die(&format!("field index ${} too large (limit {})", i, MAX_FIELDS));
+         }
+         if self.fields.len() <= iu {
+             self.fields.resize(iu + 1, String::new());
+@@ -378,7 +400,6 @@ impl Interp {
+ 
+     fn split_record(&mut self) {
+         let fs = self.getvar_str("FS");
+-        let fs = if fs.is_empty() { " ".to_string() } else { fs };
+         let pieces = awk_split(&self.record, &fs);
+         self.fields = Vec::with_capacity(pieces.len() + 1);
+         self.fields.push(String::new());
+@@ -425,6 +446,9 @@ impl Interp {
+             Node::Field(idxn) => {
+                 let iv = self.eval(idxn);
+                 let idx = value::to_num(&iv) as i64;
++                if idx < 0 {
++                    self.die(&format!("negative field index ${}", idx));
++                }
+                 value::mkstrnum(&self.get_field(idx))
+             }
+             Node::Ternary(c, a, b) => {
+@@ -548,6 +572,9 @@ impl Interp {
+                 if newnf < 0 {
+                     newnf = 0;
+                 }
++                if newnf as u64 > MAX_FIELDS as u64 {
++                    self.die(&format!("NF set to {} is too large (limit {})", newnf, MAX_FIELDS));
++                }
+                 let newnf = newnf as usize;
+                 if newnf > self.nf && self.fields.len() <= newnf {
+                     self.fields.resize(newnf + 1, String::new());
+@@ -701,6 +728,16 @@ impl Interp {
+     }
+ 
+     fn call_user_func(&mut self, name: &str, arg_nodes: &[Node]) -> Value {
++        // Deep (usually runaway) recursion: stop cleanly before the stack runs out.
++        let marker = 0u8;
++        let used = self.stack_base.saturating_sub(&marker as *const u8 as usize);
++        if self.stack_base != 0 && used > crate::INTERP_STACK_SIZE - STACK_RESERVE {
++            self.die(&format!(
++                "function call nesting too deep in {}() ({} calls active)",
++                name,
++                self.frames.len()
++            ));
++        }
+         let fd = self.funcs.get(name).cloned().unwrap();
+         let nparams = fd.params.len();
+         let mut pvars: Vec<VarRef> = Vec::with_capacity(nparams);
+@@ -793,8 +830,9 @@ impl Interp {
+                     return value::mknum(-1.0);
+                 }
+                 match self.read_from_input_key(&fname) {
+-                    None => value::mknum(0.0),
+-                    Some(r) => {
++                    Err(_) => value::mknum(-1.0),
++                    Ok(None) => value::mknum(0.0),
++                    Ok(Some(r)) => {
+                         match target {
+                             Some(t) => self.assign_to(t, value::mkstrnum_owned(r)),
+                             None => self.set_record(&r),
+@@ -811,8 +849,9 @@ impl Interp {
+                     return value::mknum(-1.0);
+                 }
+                 match self.read_from_input_key(&cmd) {
+-                    None => value::mknum(0.0),
+-                    Some(r) => {
++                    Err(_) => value::mknum(-1.0),
++                    Ok(None) => value::mknum(0.0),
++                    Ok(Some(r)) => {
+                         let nr = self.getvar_num("NR") + 1.0;
+                         self.setvar_num("NR", nr);
+                         match target {
+@@ -939,11 +978,11 @@ impl Interp {
+         }
+     }
+ 
+-    fn read_from_input_key(&mut self, key: &str) -> Option<String> {
++    fn read_from_input_key(&mut self, key: &str) -> std::io::Result<Option<String>> {
+         let rs = self.getvar_str("RS");
+-        let mut leftover = {
+-            let ent = self.inputs.get_mut(key)?;
+-            std::mem::take(&mut ent.leftover)
++        let mut leftover = match self.inputs.get_mut(key) {
++            Some(ent) => std::mem::take(&mut ent.leftover),
++            None => return Ok(None),
+         };
+         let rec = {
+             let ent = self.inputs.get_mut(key).unwrap();
+@@ -992,10 +1031,8 @@ impl Interp {
+             } else {
+                 match std::fs::File::open(&arg) {
+                     Ok(f) => Some(Box::new(std::io::BufReader::new(f))),
+-                    Err(_) => {
+-                        eprintln!("mawk: cannot open {}", arg);
+-                        self.main_input.argv_pos += 1;
+-                        continue;
++                    Err(e) => {
++                        self.die(&format!("cannot open \"{}\" ({})", arg, os_err_msg(&e)));
+                     }
+                 }
+             };
+@@ -1035,6 +1072,14 @@ impl Interp {
+                 self.main_input.leftover = leftover;
+                 r
+             };
++            let rec = match rec {
++                Ok(r) => r,
++                Err(e) => {
++                    let name = self.getvar_str("FILENAME");
++                    let what = if name.is_empty() { "standard input".to_string() } else { format!("\"{}\"", name) };
++                    self.die(&format!("read error on {} ({})", what, os_err_msg(&e)));
++                }
++            };
+             if let Some(rec) = rec {
+                 return Some(rec);
+             }
+@@ -1400,37 +1445,26 @@ impl Interp {
+         let fmt = self.convfmt();
+         let s = value::to_str(&sv, &fmt);
+         let bytes = s.as_bytes();
+-        let len = bytes.len() as i64;
+-        let m0 = if args.len() > 1 {
++        let len = bytes.len() as f64;
++        let m = {
+             let mv = self.eval(&args[1]);
+-            value::to_num(&mv)
+-        } else {
+-            1.0
++            value::to_num(&mv).trunc()
+         };
+-        let mut m = m0 as i64;
+-        let mut n: i64 = if args.len() > 2 {
++        let n = if args.len() > 2 {
+             let nv = self.eval(&args[2]);
+-            value::to_num(&nv) as i64
++            value::to_num(&nv).trunc()
+         } else {
+-            len - m + 1 + 1_000_000
++            f64::INFINITY
+         };
+-        if m < 1 {
+-            n += m - 1;
+-            m = 1;
+-        }
+-        if m > len {
++        // POSIX: characters m .. m+n-1, clipped to 1 .. len. Done in f64 so
++        // huge/infinite/NaN arguments can't overflow (NaN compares false -> "").
++        let first = m.max(1.0);
++        let past_end = (m + n).min(len + 1.0);
++        if !(first < past_end) {
+             return value::mkstr("");
+         }
+-        if n < 0 {
+-            n = 0;
+-        }
+-        if m - 1 + n > len {
+-            n = len - (m - 1);
+-        }
+-        let start = (m - 1).max(0) as usize;
+-        let start = start.min(bytes.len());
+-        let end = (start as i64 + n.max(0)) as usize;
+-        let end = end.min(bytes.len()).max(start);
++        let start = (first - 1.0) as usize;
++        let end = (past_end - 1.0) as usize;
+         value::mkstring(String::from_utf8_lossy(&bytes[start..end]).into_owned())
+     }
+ 
+@@ -1476,10 +1510,8 @@ impl Interp {
+                 }
+             }
+         } else {
+-            let f = self.getvar_str("FS");
+-            if f.is_empty() { " ".to_string() } else { f }
++            self.getvar_str("FS")
+         };
+-        let fs = if fs.is_empty() { " ".to_string() } else { fs };
+         let pieces = awk_split(&s, &fs);
+         let vref = self.var_get(&arrname);
+         {
+@@ -1626,14 +1658,15 @@ impl Interp {
+                 if w < 0 {
+                     flags.push('-');
+                 }
+-                width = Some(w.abs());
++                width = Some(w.saturating_abs());
+             } else {
+                 let wstart = i;
+                 while i < fb.len() && fb[i].is_ascii_digit() {
+                     i += 1;
+                 }
+                 if i > wstart {
+-                    width = std::str::from_utf8(&fb[wstart..i]).ok().and_then(|s| s.parse().ok());
++                    // too many digits to parse -> treat as "too large"
++                    width = Some(std::str::from_utf8(&fb[wstart..i]).ok().and_then(|s| s.parse().ok()).unwrap_or(i64::MAX));
+                 }
+             }
+             let mut precision: Option<i64> = None;
+@@ -1649,9 +1682,16 @@ impl Interp {
+                         i += 1;
+                     }
+                     let pstr = std::str::from_utf8(&fb[pstart..i]).unwrap_or("");
+-                    precision = Some(if pstr.is_empty() { 0 } else { pstr.parse().unwrap_or(0) });
++                    precision = Some(if pstr.is_empty() { 0 } else { pstr.parse().unwrap_or(i64::MAX) });
+                 }
+             }
++            if width.unwrap_or(0) > MAX_PRINTF_WIDTH || precision.unwrap_or(0) > MAX_PRINTF_WIDTH {
++                self.die(&format!(
++                    "printf: field width or precision too large (limit {}) in \"{}\"",
++                    MAX_PRINTF_WIDTH,
++                    fmt
++                ));
++            }
+             // C length modifiers are accepted and ignored: %ld, %lld, %hd
+             while i < fb.len() && matches!(fb[i], b'l' | b'h' | b'L' | b'q' | b'j' | b'z') {
+                 i += 1;
+@@ -1698,6 +1738,10 @@ fn awk_split(s: &str, fs: &str) -> Vec<String> {
+     if bytes.is_empty() {
+         return result; // an empty record has no fields, whatever FS is
+     }
++    if fs.is_empty() {
++        // FS = "" (mawk/gawk extension): every character is a field
++        return s.chars().map(|c| c.to_string()).collect();
++    }
+     if fs == " " {
+         let mut i = 0usize;
+         while i < bytes.len() {
+@@ -1748,47 +1792,60 @@ fn awk_split(s: &str, fs: &str) -> Vec<String> {
+     result
+ }
+ 
+-fn read_line_raw(reader: &mut dyn BufRead) -> Option<String> {
++/// Reads one '\n'-terminated line. Ok(None) at end of input; read errors
++/// (e.g. the "file" is a directory) are returned, not treated as EOF.
++fn read_line_raw(reader: &mut dyn BufRead) -> std::io::Result<Option<String>> {
+     let mut buf: Vec<u8> = Vec::new();
+-    match reader.read_until(b'\n', &mut buf) {
+-        Ok(0) => None,
+-        Ok(_) => {
+-            if buf.last() == Some(&b'\n') {
+-                buf.pop();
+-            }
+-            if buf.last() == Some(&b'\r') {
+-                buf.pop();
+-            }
+-            Some(String::from_utf8_lossy(&buf).into_owned())
++    if reader.read_until(b'\n', &mut buf)? == 0 {
++        return Ok(None);
++    }
++    if buf.last() == Some(&b'\n') {
++        buf.pop();
++    }
++    if buf.last() == Some(&b'\r') {
++        buf.pop();
++    }
++    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
++}
++
++fn read_byte(reader: &mut dyn BufRead) -> std::io::Result<Option<u8>> {
++    let mut one = [0u8; 1];
++    loop {
++        match reader.read(&mut one) {
++            Ok(0) => return Ok(None),
++            Ok(_) => return Ok(Some(one[0])),
++            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
++            Err(e) => return Err(e),
+         }
+-        Err(_) => None,
+     }
+ }
+ 
+-fn read_record_generic(reader: &mut dyn BufRead, leftover: &mut String, rs: &str) -> Option<String> {
++fn read_record_generic(
++    reader: &mut dyn BufRead,
++    leftover: &mut String,
++    rs: &str,
++) -> std::io::Result<Option<String>> {
+     if rs.is_empty() {
++        // paragraph mode: records are separated by blank lines
+         let mut line;
+         loop {
+-            line = read_line_raw(reader)?;
++            line = match read_line_raw(reader)? {
++                Some(l) => l,
++                None => return Ok(None),
++            };
+             if !line.is_empty() {
+                 break;
+             }
+         }
+-        let mut buf = String::new();
+-        buf.push_str(&line);
+-        loop {
+-            match read_line_raw(reader) {
+-                None => break,
+-                Some(l) => {
+-                    if l.is_empty() {
+-                        break;
+-                    }
+-                    buf.push('\n');
+-                    buf.push_str(&l);
+-                }
++        let mut buf = line;
++        while let Some(l) = read_line_raw(reader)? {
++            if l.is_empty() {
++                break;
+             }
++            buf.push('\n');
++            buf.push_str(&l);
+         }
+-        return Some(buf);
++        return Ok(Some(buf));
+     }
+     if rs.chars().count() == 1 {
+         let c = rs.chars().next().unwrap();
+@@ -1798,24 +1855,17 @@ fn read_record_generic(reader: &mut dyn BufRead, leftover: &mut String, rs: &str
+         let cbyte = c as u8;
+         let mut buf: Vec<u8> = Vec::new();
+         let mut any = false;
+-        loop {
+-            let mut one = [0u8; 1];
+-            match reader.read(&mut one) {
+-                Ok(0) => break,
+-                Ok(_) => {
+-                    any = true;
+-                    if one[0] == cbyte {
+-                        break;
+-                    }
+-                    buf.push(one[0]);
+-                }
+-                Err(_) => break,
++        while let Some(b) = read_byte(reader)? {
++            any = true;
++            if b == cbyte {
++                break;
+             }
++            buf.push(b);
+         }
+         if !any {
+-            return None;
++            return Ok(None);
+         }
+-        return Some(String::from_utf8_lossy(&buf).into_owned());
++        return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+     }
+     // multi-char RS: regex-based, using a leftover buffer
+     loop {
+@@ -1825,22 +1875,23 @@ fn read_record_generic(reader: &mut dyn BufRead, leftover: &mut String, rs: &str
+                     let rec = leftover[..ms].to_string();
+                     let rest = leftover[ms + ml..].to_string();
+                     *leftover = rest;
+-                    return Some(rec);
++                    return Ok(Some(rec));
+                 }
+             }
+         }
+         let mut chunk = [0u8; 4096];
+-        let got = match reader.read(&mut chunk) {
+-            Ok(n) => n,
+-            Err(_) => 0,
++        let got = loop {
++            match reader.read(&mut chunk) {
++                Ok(n) => break n,
++                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
++                Err(e) => return Err(e),
++            }
+         };
+         if got == 0 {
+             if !leftover.is_empty() {
+-                let rec = leftover.clone();
+-                leftover.clear();
+-                return Some(rec);
++                return Ok(Some(std::mem::take(leftover)));
+             }
+-            return None;
++            return Ok(None);
+         }
+         leftover.push_str(&String::from_utf8_lossy(&chunk[..got]));
+     }
+@@ -2037,11 +2088,12 @@ fn fmt_str(flags: &str, width: Option<i64>, precision: Option<i64>, s: &str) ->
+     pad(out, width, left, false, false)
+ }
+ 
+-/// %c: a number prints the byte with that value (mod 256, like C awk);
+-/// a string prints its first character (whole UTF-8 sequence).
++/// %c: a number -- including a numeric-looking field such as "65" -- prints
++/// the byte with that value (mod 256, like C awk); a string prints its first
++/// character (whole UTF-8 sequence).
+ fn fmt_char(flags: &str, width: Option<i64>, v: &Value) -> Vec<u8> {
+     let left = flags.contains('-');
+-    let body: Vec<u8> = if value::is_numericish(v) && !v.uninit && v.str.is_none() {
++    let body: Vec<u8> = if value::is_numericish(v) && !v.uninit {
+         let n = (value::to_num(v) as i64 & 0xFF) as u8;
+         if n == 0 { Vec::new() } else { vec![n] }
+     } else {
+@@ -2106,6 +2158,8 @@ pub fn sprintf_one_num(fmt: &str, d: f64) -> String {
+             out.push_str(std::str::from_utf8(&fb[spec_start..]).unwrap_or(""));
+             break;
+         }
++        let width = width.map(|w| w.min(MAX_PRINTF_WIDTH));
++        let precision = precision.map(|p| p.min(MAX_PRINTF_WIDTH));
+         let conv = fb[i] as char;
+         i += 1;
+         let val = if !used {
+@@ -2239,9 +2293,60 @@ impl Interp {
+     }
+ }
+ 
++fn version_text() -> String {
++    format!(
++        "mawk_rs {} (released {})\n\
++         An AWK interpreter in Rust, ported from mawk.\n\
++         \n\
++         compiled limits:\n\
++         max fields          {}\n\
++         printf width        {}\n\
++         interpreter stack   {} MB\n",
++        crate::VERSION,
++        crate::RELEASE_DATE,
++        MAX_FIELDS,
++        MAX_PRINTF_WIDTH,
++        crate::INTERP_STACK_SIZE / (1024 * 1024)
++    )
++}
++
++fn usage_text() -> String {
++    "usage: mawk [-F fs] [-v var=value] [--] 'program text' [file|var=value ...]\n\
++     \x20      mawk [-F fs] [-v var=value] -f progfile [-f progfile ...] [--] [file|var=value ...]\n\
++     \n\
++     options:\n\
++     \x20 -F fs            field separator (-Ft means tab)\n\
++     \x20 -v var=value     assign a variable before BEGIN\n\
++     \x20 -f progfile      read the program from a file (- for standard input)\n\
++     \x20 -W version, --version   show version and limits\n\
++     \x20 -W usage,   --help      show this help\n"
++        .to_string()
++}
++
++/// Reads a -f program file. UTF-8 is expected; a file that isn't valid
++/// UTF-8 (e.g. a Windows-1252 script) is decoded as Latin-1 rather than
++/// rejected, so its string literals keep their characters.
++fn read_program_file(fname: &str) -> Result<String, String> {
++    let bytes = if fname == "-" || fname == "/dev/stdin" {
++        let mut b = Vec::new();
++        std::io::Read::read_to_end(&mut std::io::stdin(), &mut b)
++            .map_err(|e| format!("cannot read program from standard input ({})", os_err_msg(&e)))?;
++        b
++    } else {
++        std::fs::read(fname).map_err(|e| format!("cannot open program file \"{}\" ({})", fname, os_err_msg(&e)))?
++    };
++    Ok(match String::from_utf8(bytes) {
++        Ok(s) => s,
++        Err(e) => e.into_bytes().iter().map(|&b| b as char).collect(),
++    })
++}
++
+ /// Top-level entry point, equivalent to mawk.c's main().
+ pub fn run(argv: &[String]) -> Result<i32, String> {
+     let mut interp = Interp::new();
++    // Remember roughly where this thread's stack starts, for the recursion guard.
++    let stack_marker = 0u8;
++    interp.stack_base = &stack_marker as *const u8 as usize;
+ 
+     {
+         let environ_ref = interp.var_get("ENVIRON");
+@@ -2257,42 +2362,62 @@ pub fn run(argv: &[String]) -> Result<i32, String> {
+     let mut preassign: Vec<(String, String)> = Vec::new();
+     let mut fsopt: Option<String> = None;
+     let mut i = 1usize;
++
++    // Value of an option given either attached (-Fx) or as the next argument (-F x).
++    fn opt_value(argv: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
++        let a = &argv[*i];
++        if a.len() > flag.len() {
++            Ok(a[flag.len()..].to_string())
++        } else if *i + 1 < argv.len() {
++            *i += 1;
++            Ok(argv[*i].clone())
++        } else {
++            Err(format!("option {} requires an argument", flag))
++        }
++    }
++
+     while i < argv.len() {
+         let a = argv[i].clone();
+-        if a == "--" {
+-            i += 1;
+-            if !have_prog && i < argv.len() {
+-                progbuf.push_str(&argv[i]);
+-                have_prog = true;
++        match a.as_str() {
++            "--" => {
+                 i += 1;
++                break;
+             }
+-            break;
++            "--version" | "-V" => {
++                print!("{}", version_text());
++                return Ok(0);
++            }
++            "--help" | "-h" => {
++                print!("{}", usage_text());
++                return Ok(0);
++            }
++            _ => {}
++        }
++        if a.starts_with("-W") {
++            let w = opt_value(argv, &mut i, "-W")?;
++            let wl = w.to_ascii_lowercase();
++            if wl.starts_with('v') {
++                print!("{}", version_text());
++                return Ok(0);
++            } else if wl.starts_with('h') || wl.starts_with('u') {
++                print!("{}", usage_text());
++                return Ok(0);
++            } else {
++                eprintln!("mawk: vacuous option: -W \"{}\"", w);
++            }
++            i += 1;
++            continue;
+         }
+         if a.starts_with("-f") {
+-            let fname = if a.len() > 2 {
+-                a[2..].to_string()
+-            } else if i + 1 < argv.len() {
+-                i += 1;
+-                argv[i].clone()
+-            } else {
+-                break;
+-            };
+-            let content = std::fs::read_to_string(&fname).map_err(|_| "cannot open program file".to_string())?;
+-            progbuf.push_str(&content);
++            let fname = opt_value(argv, &mut i, "-f")?;
++            progbuf.push_str(&read_program_file(&fname)?);
+             progbuf.push('\n');
+             have_prog = true;
+             i += 1;
+             continue;
+         }
+         if a.starts_with("-v") {
+-            let assign = if a.len() > 2 {
+-                a[2..].to_string()
+-            } else if i + 1 < argv.len() {
+-                i += 1;
+-                argv[i].clone()
+-            } else {
+-                break;
+-            };
++            let assign = opt_value(argv, &mut i, "-v")?;
+             match assign.find('=') {
+                 Some(eq) => {
+                     let (n, v) = assign.split_at(eq);
+@@ -2304,29 +2429,24 @@ pub fn run(argv: &[String]) -> Result<i32, String> {
+             continue;
+         }
+         if a.starts_with("-F") {
+-            fsopt = Some(if a.len() > 2 {
+-                a[2..].to_string()
+-            } else if i + 1 < argv.len() {
+-                i += 1;
+-                argv[i].clone()
+-            } else {
+-                break;
+-            });
++            fsopt = Some(opt_value(argv, &mut i, "-F")?);
+             i += 1;
+             continue;
+         }
+-        if !have_prog && !a.starts_with('-') {
+-            progbuf.push_str(&a);
+-            have_prog = true;
+-            i += 1;
+-            continue;
++        if a.len() > 1 && a.starts_with('-') && !have_prog {
++            return Err(format!("not an option: {}", a));
+         }
+         break;
+     }
++    // Without -f, the first operand is the program text; everything after
++    // it is an input file or var=value operand, even if it starts with '-'.
++    if !have_prog && i < argv.len() {
++        progbuf.push_str(&argv[i]);
++        have_prog = true;
++        i += 1;
++    }
+     if !have_prog {
+-        eprintln!(
+-            "usage: mawk [-F fs] [-v var=val] 'program' [file|var=val ...]\n       mawk [-F fs] [-v var=val] -f prog.awk [-f prog2.awk ...] [file|var=val ...]"
+-        );
++        eprint!("{}", usage_text());
+         return Ok(2);
+     }
+     if let Some(fs) = fsopt {
+diff --git a/src/main.rs b/src/main.rs
+index dd0290f..e248dc1 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -9,6 +9,10 @@
+ // Release  date: 9/27/2026
+ // ============================================================================
+ 
++/// Reported by `--version` / `-W version`; keep in sync with the header above.
++pub const VERSION: &str = "1.0.0";
++pub const RELEASE_DATE: &str = "9/27/2026";
++
+ mod regex_engine;
+ mod value;
+ mod lexer;
+diff --git a/src/value.rs b/src/value.rs
+index 1067b4e..687c3f4 100644
+--- a/src/value.rs
++++ b/src/value.rs
+@@ -118,9 +118,17 @@ pub fn to_num(v: &Value) -> f64 {
+     }
+ }
+ 
++/// Number -> string. Integral values print as integers (like mawk, up to
++/// 2^64); anything else goes through CONVFMT/OFMT.
+ pub fn fmt_num(d: f64, fmt: &str) -> String {
+-    if d.is_finite() && d == (d as i64) as f64 && d.abs() < 1e15 {
+-        format!("{}", d as i64)
++    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
++    const TWO_64: f64 = 18_446_744_073_709_551_616.0;
++    if d.is_finite() && d.fract() == 0.0 && d >= -TWO_63 && d < TWO_64 {
++        if d < TWO_63 {
++            format!("{}", d as i64)
++        } else {
++            format!("{}", d as u64)
++        }
+     } else {
+         crate::interp::sprintf_one_num(fmt, d)
+     }

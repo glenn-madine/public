@@ -4,7 +4,7 @@
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokType {
-    Eof, Num, Str, Ere, Ident, FuncName,
+    Eof, Num, Str, Ere, Ident, FuncName, Builtin,
     Begin, End, If, Else, While, Do, For, Print, Printf,
     Next, NextFile, Exit, Break, Continue, Delete, In,
     Function, Getline, Return,
@@ -21,23 +21,50 @@ pub struct Token {
     pub ty: TokType,
     pub num: f64,
     pub text: String,
+    pub line: usize,
 }
 
-impl Token {
-    fn simple(ty: TokType) -> Token {
-        Token { ty, num: 0.0, text: String::new() }
-    }
+/// Builtin function names with their (min, max) argument counts.
+/// `usize::MAX` means variadic.
+pub const BUILTINS: &[(&str, usize, usize)] = &[
+    ("length", 0, 1),
+    ("substr", 2, 3),
+    ("index", 2, 2),
+    ("split", 2, 3),
+    ("sub", 2, 3),
+    ("gsub", 2, 3),
+    ("match", 2, 2),
+    ("sprintf", 1, usize::MAX),
+    ("sin", 1, 1),
+    ("cos", 1, 1),
+    ("atan2", 2, 2),
+    ("exp", 1, 1),
+    ("log", 1, 1),
+    ("sqrt", 1, 1),
+    ("int", 1, 1),
+    ("rand", 0, 0),
+    ("srand", 0, 1),
+    ("tolower", 1, 1),
+    ("toupper", 1, 1),
+    ("system", 1, 1),
+    ("close", 1, 1),
+    ("fflush", 0, 1),
+];
+
+pub fn builtin_arity(name: &str) -> Option<(usize, usize)> {
+    BUILTINS.iter().find(|(n, _, _)| *n == name).map(|&(_, lo, hi)| (lo, hi))
 }
 
 #[derive(Clone)]
 pub struct Lexer {
     src: Vec<u8>,
     pos: usize,
+    pub line: usize,
 }
 
 impl Lexer {
     pub fn new(src: &str) -> Lexer {
-        Lexer { src: src.as_bytes().to_vec(), pos: 0 }
+        Lexer { src: src.as_bytes().to_vec(), pos: 0, line: 1 }
     }
 
     fn cur(&self) -> u8 {
@@ -48,15 +75,21 @@ impl Lexer {
         if p < self.src.len() { self.src[p] } else { 0 }
     }
 
+    fn tok(&self, ty: TokType) -> Token {
+        Token { ty, num: 0.0, text: String::new(), line: self.line }
+    }
+
     fn skip_ws_comments(&mut self) {
         loop {
             while self.cur() == b' '
                 || self.cur() == b'\t'
                 || self.cur() == b'\r'
                 || (self.cur() == b'\\' && self.at(1) == b'\n')
+                || (self.cur() == b'\\' && self.at(1) == b'\r' && self.at(2) == b'\n')
             {
                 if self.cur() == b'\\' {
-                    self.pos += 2;
+                    self.pos += if self.at(1) == b'\r' { 3 } else { 2 };
+                    self.line += 1;
                 } else {
                     self.pos += 1;
                 }
@@ -71,55 +104,113 @@ impl Lexer {
         }
     }
 
+    /// Reads one escape sequence (the backslash has already been consumed)
+    /// and appends the resulting byte(s). Unknown escapes keep the backslash,
+    /// as mawk does, so "\." still reaches a dynamic regex as a literal dot.
+    fn read_escape(&mut self, out: &mut Vec<u8>) {
+        let e = self.cur();
+        match e {
+            b'n' => { out.push(b'\n'); self.pos += 1; }
+            b't' => { out.push(b'\t'); self.pos += 1; }
+            b'r' => { out.push(b'\r'); self.pos += 1; }
+            b'a' => { out.push(7); self.pos += 1; }
+            b'b' => { out.push(8); self.pos += 1; }
+            b'f' => { out.push(12); self.pos += 1; }
+            b'v' => { out.push(11); self.pos += 1; }
+            b'\\' => { out.push(b'\\'); self.pos += 1; }
+            b'"' => { out.push(b'"'); self.pos += 1; }
+            b'0'..=b'7' => {
+                let mut v: u32 = 0;
+                let mut n = 0;
+                while n < 3 && (b'0'..=b'7').contains(&self.cur()) {
+                    v = v * 8 + (self.cur() - b'0') as u32;
+                    self.pos += 1;
+                    n += 1;
+                }
+                out.push((v & 0xFF) as u8);
+            }
+            b'x' if self.at(1).is_ascii_hexdigit() => {
+                self.pos += 1;
+                let mut v: u32 = 0;
+                let mut n = 0;
+                while n < 2 && self.cur().is_ascii_hexdigit() {
+                    v = v * 16 + (self.cur() as char).to_digit(16).unwrap();
+                    self.pos += 1;
+                    n += 1;
+                }
+                out.push(v as u8);
+            }
+            b'\n' => {
+                // backslash-newline inside a string: line continuation
+                self.pos += 1;
+                self.line += 1;
+            }
+            0 => out.push(b'\\'),
+            _ => {
+                out.push(b'\\');
+                out.push(e);
+                self.pos += 1;
+            }
+        }
+    }
+
     /// prev_significant tells us whether '/' should be interpreted as division
     /// (true) or as the start of an ERE literal (false).
     pub fn next(&mut self, prev_significant: bool) -> Token {
         self.skip_ws_comments();
         let c = self.cur();
         if c == 0 {
-            return Token::simple(TokType::Eof);
+            return self.tok(TokType::Eof);
         }
         if c == b'\n' {
+            let t = self.tok(TokType::Newline);
             self.pos += 1;
-            return Token::simple(TokType::Newline);
+            self.line += 1;
+            return t;
         }
         if c == b'"' {
+            let line = self.line;
             self.pos += 1;
-            let mut s = String::new();
+            let mut s: Vec<u8> = Vec::new();
             while self.cur() != 0 && self.cur() != b'"' {
-                let mut ch = self.cur();
+                let ch = self.cur();
                 self.pos += 1;
-                if ch == b'\\' && self.cur() != 0 {
-                    let e = self.cur();
-                    self.pos += 1;
-                    ch = match e {
-                        b'n' => b'\n',
-                        b't' => b'\t',
-                        b'r' => b'\r',
-                        b'\\' => b'\\',
-                        b'"' => b'"',
-                        b'/' => b'/',
-                        _ => e,
-                    };
+                if ch == b'\\' {
+                    self.read_escape(&mut s);
+                } else {
+                    if ch == b'\n' {
+                        eprintln!("mawk: line {}: runaway string constant", line);
+                        std::process::exit(2);
+                    }
+                    s.push(ch);
                 }
-                s.push(ch as char);
             }
             if self.cur() == b'"' {
                 self.pos += 1;
+            } else {
+                eprintln!("mawk: line {}: runaway string constant", line);
+                std::process::exit(2);
             }
-            return Token { ty: TokType::Str, num: 0.0, text: s };
+            return Token { ty: TokType::Str, num: 0.0, text: String::from_utf8_lossy(&s).into_owned(), line };
         }
         if c.is_ascii_digit() || (c == b'.' && self.at(1).is_ascii_digit()) {
             let start = self.pos;
-            let rest = std::str::from_utf8(&self.src[start..]).unwrap_or("");
+            // Only scan the ASCII number prefix; never hand parse_leading_double
+            // something it could read as "inf"/"nan".
+            let mut end = start;
+            while end < self.src.len()
+                && (self.src[end].is_ascii_alphanumeric() || matches!(self.src[end], b'.' | b'+' | b'-'))
+            {
+                end += 1;
+            }
+            let rest = std::str::from_utf8(&self.src[start..end]).unwrap_or("");
             if let Some((val, remainder)) = crate::value::parse_leading_double(rest) {
                 let consumed = rest.len() - remainder.len();
                 self.pos = start + consumed;
-                return Token { ty: TokType::Num, num: val, text: String::new() };
+                return Token { ty: TokType::Num, num: val, text: String::new(), line: self.line };
             }
-            // fallback: shouldn't happen
             self.pos += 1;
-            return Token { ty: TokType::Num, num: 0.0, text: String::new() };
+            return Token { ty: TokType::Num, num: 0.0, text: String::new(), line: self.line };
         }
         if c.is_ascii_alphabetic() || c == b'_' {
             let start = self.pos;
@@ -150,37 +241,74 @@ impl Lexer {
                 _ => None,
             };
             if let Some(tt) = kw {
-                return Token::simple(tt);
+                return self.tok(tt);
             }
+            // Builtins are reserved words: `length` works without parens and
+            // `substr ($0, 1)` may have a space before the paren.
+            if builtin_arity(&word).is_some() {
+                return Token { ty: TokType::Builtin, num: 0.0, text: word, line: self.line };
+            }
+            // User function calls must have '(' immediately after the name.
             if self.cur() == b'(' {
-                return Token { ty: TokType::FuncName, num: 0.0, text: word };
+                return Token { ty: TokType::FuncName, num: 0.0, text: word, line: self.line };
             }
-            return Token { ty: TokType::Ident, num: 0.0, text: word };
+            return Token { ty: TokType::Ident, num: 0.0, text: word, line: self.line };
         }
         if c == b'/' && !prev_significant {
+            let line = self.line;
             self.pos += 1;
-            let mut s = String::new();
-            while self.cur() != 0 && self.cur() != b'/' {
-                let mut ch = self.cur();
+            let mut s: Vec<u8> = Vec::new();
+            let mut in_class = false;
+            while self.cur() != 0 && (self.cur() != b'/' || in_class) {
+                let ch = self.cur();
+                if ch == b'\n' {
+                    break;
+                }
                 self.pos += 1;
                 if ch == b'\\' && self.cur() != 0 {
-                    s.push(ch as char);
-                    ch = self.cur();
+                    // "\/" is just an escaped slash; keep other escapes for the regex engine
+                    if self.cur() == b'/' {
+                        s.push(b'/');
+                    } else {
+                        s.push(b'\\');
+                        s.push(self.cur());
+                    }
                     self.pos += 1;
+                    continue;
                 }
-                s.push(ch as char);
+                if ch == b'[' && !in_class {
+                    in_class = true;
+                    s.push(ch);
+                    // a ']' right after '[' or '[^' is a literal member
+                    if self.cur() == b'^' {
+                        s.push(b'^');
+                        self.pos += 1;
+                    }
+                    if self.cur() == b']' {
+                        s.push(b']');
+                        self.pos += 1;
+                    }
+                    continue;
+                }
+                if ch == b']' && in_class {
+                    in_class = false;
+                }
+                s.push(ch);
             }
             if self.cur() == b'/' {
                 self.pos += 1;
+            } else {
+                eprintln!("mawk: line {}: runaway regular expression /{} ...", line, String::from_utf8_lossy(&s));
+                std::process::exit(2);
             }
-            return Token { ty: TokType::Ere, num: 0.0, text: s };
+            return Token { ty: TokType::Ere, num: 0.0, text: String::from_utf8_lossy(&s).into_owned(), line };
         }
 
         macro_rules! op2 {
             ($a:expr, $b:expr, $tt:expr) => {
                 if c == $a && self.at(1) == $b {
                     self.pos += 2;
-                    return Token::simple($tt);
+                    return self.tok($tt);
                 }
             };
         }
@@ -227,18 +355,18 @@ impl Lexer {
             b':' => TokType::Colon,
             b'|' => TokType::Pipe,
             _ => {
-                eprintln!("mawk: unexpected character '{}'", c as char);
+                eprintln!("mawk: line {}: unexpected character '{}'", self.line, c as char);
                 std::process::exit(2);
             }
         };
-        Token::simple(ty)
+        self.tok(ty)
     }
 }
 
 pub fn token_is_value_end(t: TokType) -> bool {
     matches!(
         t,
-        TokType::Num | TokType::Str | TokType::Ident | TokType::RParen | TokType::RBracket
+        TokType::Num | TokType::Str | TokType::Ident | TokType::Builtin | TokType::RParen | TokType::RBracket
             | TokType::Dollar | TokType::Incr | TokType::Decr
     )
 }

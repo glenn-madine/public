@@ -1,0 +1,2900 @@
+diff --git a/src/ast.rs b/src/ast.rs
+index 589fc7e..0a2ce6e 100644
+--- a/src/ast.rs
++++ b/src/ast.rs
+@@ -65,7 +65,6 @@ pub enum PType {
+     End,
+     Always,
+     Expr(Node),
+-    Ere(String),
+     Range(Node, Node),
+ }
+ 
+@@ -76,6 +75,7 @@ pub struct Rule {
+ }
+ 
+ pub struct FuncDef {
++    #[allow(dead_code)] // kept for diagnostics / debugging
+     pub name: String,
+     pub params: Vec<String>,
+     pub body: Stmt,
+diff --git a/src/interp.rs b/src/interp.rs
+index 995322c..3b8d7a9 100644
+--- a/src/interp.rs
++++ b/src/interp.rs
+@@ -10,7 +10,7 @@ use crate::value::{self, Value};
+ use std::cell::RefCell;
+ use std::cmp::Ordering;
+ use std::collections::HashMap;
+-use std::io::{BufRead, Write};
++use std::io::{BufRead, IsTerminal, Write};
+ use std::process::{Child, Command, Stdio};
+ use std::rc::Rc;
+ 
+@@ -21,6 +21,72 @@ pub struct VarSlot {
+ }
+ pub type VarRef = Rc<RefCell<VarSlot>>;
+ 
++/// A resolved assignment target. Resolving evaluates subscripts and field
++/// indexes exactly once, so `a[i++] += 1` and `$(n++)++` have no double
++/// side effects.
++enum LRef {
++    Var(VarRef),
++    NF,
++    Elem(VarRef, String),
++    Field(i64),
++}
++
++/// Builds a shell command: `sh -c` on Unix, `cmd /C` on Windows.
++fn shell_command(cmd: &str) -> Command {
++    if cfg!(windows) {
++        let mut c = Command::new("cmd");
++        c.arg("/C").arg(cmd);
++        c
++    } else {
++        let mut c = Command::new("sh");
++        c.arg("-c").arg(cmd);
++        c
++    }
++}
++
++/// Processes backslash escapes in -v / command-line assignments and -F.
++pub fn process_escapes(s: &str) -> String {
++    let b = s.as_bytes();
++    let mut out: Vec<u8> = Vec::with_capacity(b.len());
++    let mut i = 0;
++    while i < b.len() {
++        if b[i] != b'\\' || i + 1 >= b.len() {
++            out.push(b[i]);
++            i += 1;
++            continue;
++        }
++        i += 1;
++        match b[i] {
++            b'n' => { out.push(b'\n'); i += 1; }
++            b't' => { out.push(b'\t'); i += 1; }
++            b'r' => { out.push(b'\r'); i += 1; }
++            b'a' => { out.push(7); i += 1; }
++            b'b' => { out.push(8); i += 1; }
++            b'f' => { out.push(12); i += 1; }
++            b'v' => { out.push(11); i += 1; }
++            b'\\' => { out.push(b'\\'); i += 1; }
++            b'"' => { out.push(b'"'); i += 1; }
++            b'/' => { out.push(b'/'); i += 1; }
++            b'0'..=b'7' => {
++                let mut v: u32 = 0;
++                let mut n = 0;
++                while n < 3 && i < b.len() && (b'0'..=b'7').contains(&b[i]) {
++                    v = v * 8 + (b[i] - b'0') as u32;
++                    i += 1;
++                    n += 1;
++                }
++                out.push((v & 0xFF) as u8);
++            }
++            c => {
++                out.push(b'\\');
++                out.push(c);
++                i += 1;
++            }
++        }
++    }
++    String::from_utf8_lossy(&out).into_owned()
++}
++
+ fn new_slot(v: Value) -> VarRef {
+     Rc::new(RefCell::new(VarSlot { val: v, is_arr: false, arr: HashMap::new() }))
+ }
+@@ -102,7 +168,9 @@ pub struct Interp {
+     exit_code: i32,
+     retval: Value,
+     rng: Rng,
++    seed: f64,
+     main_input: MainInput,
++    stdout: Box<dyn Write>,
+ }
+ 
+ impl Interp {
+@@ -119,9 +187,16 @@ impl Interp {
+             rules: Rc::new(Vec::new()),
+             flow: Flow::None,
+             exit_code: 0,
+-            retval: value::mknum(0.0),
+-            rng: Rng::new(1),
++            retval: value::mkuninit(),
++            rng: Rng::new(0),
++            seed: 0.0,
+             main_input: MainInput::new(),
++            // Block-buffer stdout unless it's a terminal (then stay line-buffered).
++            stdout: if std::io::stdout().is_terminal() {
++                Box::new(std::io::stdout())
++            } else {
++                Box::new(std::io::BufWriter::with_capacity(64 * 1024, std::io::stdout()))
++            },
+         };
+         it.setvar_str("FS", " ");
+         it.setvar_str("OFS", " ");
+@@ -143,11 +218,22 @@ impl Interp {
+         self.funcs = p.funcs.into_iter().map(|(k, v)| (k, Rc::new(v))).collect();
+     }
+ 
+-    fn die(&self, msg: &str) -> ! {
++    fn die(&mut self, msg: &str) -> ! {
++        self.flush_all();
+         eprintln!("mawk: {}", msg);
+         std::process::exit(2);
+     }
+ 
++    /// Handles a failed write. A closed pipe (e.g. `awk ... | head`) ends the
++    /// program quietly, like the SIGPIPE a C awk would receive.
++    fn write_failed(&mut self, e: std::io::Error, what: &str) -> ! {
++        if e.kind() == std::io::ErrorKind::BrokenPipe {
++            std::process::exit(141);
++        }
++        eprintln!("mawk: write failure on {}: {}", what, e);
++        std::process::exit(2);
++    }
++
+     // ---- variables ----
+ 
+     fn frame_lookup(&self, name: &str) -> Option<VarRef> {
+@@ -166,7 +252,7 @@ impl Interp {
+         if let Some(v) = self.globals.get(name) {
+             return v.clone();
+         }
+-        let slot = new_slot(value::mkstr(""));
++        let slot = new_slot(value::mkuninit());
+         self.globals.insert(name.to_string(), slot.clone());
+         slot
+     }
+@@ -179,6 +265,10 @@ impl Interp {
+         let v = self.var_get(name);
+         v.borrow_mut().val = value::mkstr(s);
+     }
++    fn setvar_strnum(&mut self, name: &str, s: &str) {
++        let v = self.var_get(name);
++        v.borrow_mut().val = value::mkstrnum(s);
++    }
+     fn getvar_num(&self, name: &str) -> f64 {
+         match self.var_find(name) {
+             Some(v) => value::to_num(&v.borrow().val),
+@@ -317,29 +407,21 @@ impl Interp {
+                     return value::mknum(self.nf as f64);
+                 }
+                 match self.var_find(name) {
+-                    None => value::mkstr(""),
++                    None => value::mkuninit(),
+                     Some(vref) => {
+                         let b = vref.borrow();
+-                        match &b.val.str {
+-                            Some(s) => {
+-                                if b.val.is_strnum { value::mkstrnum(s) } else { value::mkstr(s) }
+-                            }
+-                            None => value::mknum(b.val.num),
++                        if b.is_arr {
++                            drop(b);
++                            self.die(&format!("illegal reference to array {}", name));
+                         }
++                        b.val.clone()
+                     }
+                 }
+             }
+-            Node::ArrRef(name, idxs) => {
+-                let key = self.build_key(idxs);
+-                let vref = self.var_get(name);
+-                let mut b = vref.borrow_mut();
+-                b.is_arr = true;
+-                let entry = b.arr.entry(key).or_insert_with(|| value::mkstr(""));
+-                match &entry.str {
+-                    Some(s) => value::mkstrnum(s),
+-                    None => value::mknum(entry.num),
+-                }
+-            }
++            Node::ArrRef(..) => match self.resolve(n) {
++                Some(r) => self.lref_get(&r),
++                None => unreachable!(),
++            },
+             Node::Field(idxn) => {
+                 let iv = self.eval(idxn);
+                 let idx = value::to_num(&iv) as i64;
+@@ -390,73 +472,110 @@ impl Interp {
+                 let d = value::to_num(&av);
+                 value::mknum(if *op == TokType::Minus { -d } else { d })
+             }
+-            Node::PreIncDec(op, target) => {
+-                let cur = self.eval_lvalue_current(target);
+-                let mut d = value::to_num(&cur);
+-                d += if *op == TokType::Incr { 1.0 } else { -1.0 };
+-                self.assign_to(target, value::mknum(d));
+-                value::mknum(d)
+-            }
+-            Node::PostIncDec(op, target) => {
+-                let cur = self.eval_lvalue_current(target);
++            Node::PreIncDec(op, target) | Node::PostIncDec(op, target) => {
++                let r = match self.resolve(target) {
++                    Some(r) => r,
++                    None => self.die("invalid ++/-- target"),
++                };
++                let cur = self.lref_get(&r);
+                 let d = value::to_num(&cur);
+                 let nd = d + if *op == TokType::Incr { 1.0 } else { -1.0 };
+-                self.assign_to(target, value::mknum(nd));
+-                value::mknum(d)
++                self.lref_set(r, value::mknum(nd));
++                value::mknum(if matches!(n, Node::PreIncDec(..)) { nd } else { d })
+             }
+             Node::Call(name, args) => self.eval_call(name, args),
+         }
+     }
+ 
+-    fn eval_lvalue_current(&mut self, target: &Node) -> Value {
+-        if let Node::Group(inner) = target {
+-            self.eval_lvalue_current(inner)
+-        } else {
+-            self.eval(target)
+-        }
+-    }
+-
+-    fn assign_to(&mut self, target: &Node, v: Value) {
++    /// Resolves an assignment target, evaluating subscripts/field indexes once.
++    /// Returns None if `target` is not an lvalue.
++    fn resolve(&mut self, target: &Node) -> Option<LRef> {
+         match target {
+             Node::Var(name) => {
+-                if name == "NF" {
+-                    let newnf_f = value::to_num(&v);
+-                    let mut newnf = newnf_f as i64;
+-                    if newnf < 0 {
+-                        newnf = 0;
+-                    }
+-                    let newnf = newnf as usize;
+-                    if newnf < self.nf {
+-                        self.nf = newnf;
+-                    } else if newnf > self.nf {
+-                        if self.fields.len() <= newnf {
+-                            self.fields.resize(newnf + 1, String::new());
+-                        }
+-                        self.nf = newnf;
+-                    }
+-                    self.setvar_num("NF", self.nf as f64);
+-                    self.rebuild_record();
+-                    return;
++                if name == "NF" && self.frame_lookup(name).is_none() {
++                    return Some(LRef::NF);
+                 }
+                 let vref = self.var_get(name);
+-                vref.borrow_mut().val = v;
++                if vref.borrow().is_arr {
++                    self.die(&format!("can't assign to {}; it's an array name.", name));
++                }
++                Some(LRef::Var(vref))
++            }
++            Node::ArrRef(name, idxs) => {
++                let key = self.build_key(idxs);
++                let vref = self.var_get(name);
++                {
++                    let mut b = vref.borrow_mut();
++                    if !b.is_arr && !b.val.uninit {
++                        drop(b);
++                        self.die(&format!("can't use scalar {} as array", name));
++                    }
++                    b.is_arr = true;
++                }
++                Some(LRef::Elem(vref, key))
+             }
+             Node::Field(idxn) => {
+                 let iv = self.eval(idxn);
+                 let idx = value::to_num(&iv) as i64;
++                if idx < 0 {
++                    self.die(&format!("negative field index ${}", idx));
++                }
++                Some(LRef::Field(idx))
++            }
++            Node::Group(inner) => self.resolve(inner),
++            _ => None,
++        }
++    }
++
++    fn lref_get(&mut self, r: &LRef) -> Value {
++        match r {
++            LRef::Var(v) => v.borrow().val.clone(),
++            LRef::NF => value::mknum(self.nf as f64),
++            LRef::Elem(v, key) => {
++                // referencing an element creates it (awk semantics)
++                let mut b = v.borrow_mut();
++                b.arr.entry(key.clone()).or_insert_with(value::mkuninit).clone()
++            }
++            LRef::Field(i) => value::mkstrnum(&self.get_field(*i)),
++        }
++    }
++
++    fn lref_set(&mut self, r: LRef, v: Value) {
++        match r {
++            LRef::Var(vref) => vref.borrow_mut().val = v,
++            LRef::NF => {
++                let mut newnf = value::to_num(&v) as i64;
++                if newnf < 0 {
++                    newnf = 0;
++                }
++                let newnf = newnf as usize;
++                if newnf > self.nf && self.fields.len() <= newnf {
++                    self.fields.resize(newnf + 1, String::new());
++                }
++                if newnf > self.nf {
++                    for f in &mut self.fields[self.nf + 1..=newnf] {
++                        f.clear();
++                    }
++                }
++                self.nf = newnf;
++                self.setvar_num("NF", self.nf as f64);
++                self.rebuild_record();
++            }
++            LRef::Elem(vref, key) => {
++                vref.borrow_mut().arr.insert(key, v);
++            }
++            LRef::Field(idx) => {
+                 let fmt = self.convfmt();
+                 let s = value::to_str(&v, &fmt);
+                 self.set_field(idx, &s);
+             }
+-            Node::ArrRef(name, idxs) => {
+-                let key = self.build_key(idxs);
+-                let vref = self.var_get(name);
+-                let mut b = vref.borrow_mut();
+-                b.is_arr = true;
+-                b.arr.insert(key, v);
+-            }
+-            Node::Group(inner) => self.assign_to(inner, v),
+-            _ => self.die("invalid assignment target"),
++        }
++    }
++
++    fn assign_to(&mut self, target: &Node, v: Value) {
++        match self.resolve(target) {
++            Some(r) => self.lref_set(r, v),
++            None => self.die("invalid assignment target"),
+         }
+     }
+ 
+@@ -467,10 +586,16 @@ impl Interp {
+             self.assign_to(target, v);
+             stored
+         } else {
+-            let cur = self.eval_lvalue_current(target);
+-            let c = value::to_num(&cur);
++            let lr = match self.resolve(target) {
++                Some(r) => r,
++                None => self.die("invalid assignment target"),
++            };
++            // mawk order: evaluate the right side, then read the target
++            // (so `x += x++` with x=1 gives 3).
+             let rv = self.eval(rhs);
+             let r = value::to_num(&rv);
++            let cur = self.lref_get(&lr);
++            let c = value::to_num(&cur);
+             let res = match op {
+                 TokType::AddAssign => c + r,
+                 TokType::SubAssign => c - r,
+@@ -490,7 +615,7 @@ impl Interp {
+                 TokType::PowAssign => c.powf(r),
+                 _ => 0.0,
+             };
+-            self.assign_to(target, value::mknum(res));
++            self.lref_set(lr, value::mknum(res));
+             value::mknum(res)
+         }
+     }
+@@ -579,17 +704,39 @@ impl Interp {
+         let fd = self.funcs.get(name).cloned().unwrap();
+         let nparams = fd.params.len();
+         let mut pvars: Vec<VarRef> = Vec::with_capacity(nparams);
++        // (param slot, caller slot) for untyped variables: if the callee turns
++        // the parameter into an array, the caller's variable becomes that array.
++        let mut backlinks: Vec<(VarRef, VarRef)> = Vec::new();
+         for i in 0..nparams {
+             if i < arg_nodes.len() {
+                 if let Node::Var(vname) = &arg_nodes[i] {
+-                    let vref = self.var_get(vname);
+-                    pvars.push(vref);
++                    let caller = if vname == "NF" && self.frame_lookup(vname).is_none() {
++                        new_slot(value::mknum(self.nf as f64))
++                    } else {
++                        self.var_get(vname)
++                    };
++                    let (is_arr, uninit) = {
++                        let b = caller.borrow();
++                        (b.is_arr, b.val.uninit)
++                    };
++                    if is_arr {
++                        // arrays are passed by reference
++                        pvars.push(caller);
++                    } else if uninit {
++                        let slot = new_slot(value::mkuninit());
++                        backlinks.push((slot.clone(), caller));
++                        pvars.push(slot);
++                    } else {
++                        // scalars are passed by value
++                        let v = caller.borrow().val.clone();
++                        pvars.push(new_slot(v));
++                    }
+                 } else {
+                     let v = self.eval(&arg_nodes[i]);
+                     pvars.push(new_slot(v));
+                 }
+             } else {
+-                pvars.push(new_slot(value::mkstr("")));
++                pvars.push(new_slot(value::mkuninit()));
+             }
+         }
+         let mut frame_map = HashMap::new();
+@@ -597,13 +744,24 @@ impl Interp {
+             frame_map.insert(pname.clone(), vref);
+         }
+         self.frames.push(frame_map);
+-        self.retval = value::mknum(0.0);
+         self.exec_stmt(&fd.body);
+-        let ret = self.retval.clone();
+-        if self.flow == Flow::Return {
++        let ret = if self.flow == Flow::Return {
+             self.flow = Flow::None;
+-        }
++            std::mem::replace(&mut self.retval, value::mkuninit())
++        } else {
++            value::mkuninit()
++        };
+         self.frames.pop();
++        for (slot, caller) in backlinks {
++            let mut s = slot.borrow_mut();
++            if s.is_arr {
++                let mut c = caller.borrow_mut();
++                if !c.is_arr && c.val.uninit {
++                    c.is_arr = true;
++                    c.arr = std::mem::take(&mut s.arr);
++                }
++            }
++        }
+         ret
+     }
+ }
+@@ -673,7 +831,8 @@ impl Interp {
+             return true;
+         }
+         if is_cmd {
+-            match Command::new("sh").arg("-c").arg(key).stdout(Stdio::piped()).spawn() {
++            self.flush_all();
++            match shell_command(key).stdout(Stdio::piped()).spawn() {
+                 Ok(mut child) => {
+                     let stdout = child.stdout.take().unwrap();
+                     self.inputs.insert(
+@@ -703,10 +862,14 @@ impl Interp {
+             return true;
+         }
+         if mode == 2 {
+-            match Command::new("sh").arg("-c").arg(key).stdin(Stdio::piped()).spawn() {
++            self.flush_all();
++            match shell_command(key).stdin(Stdio::piped()).spawn() {
+                 Ok(mut child) => {
+                     let stdin = child.stdin.take().unwrap();
+-                    self.outputs.insert(key.to_string(), OutputEnt { writer: Box::new(stdin), child: Some(child) });
++                    self.outputs.insert(
++                        key.to_string(),
++                        OutputEnt { writer: Box::new(std::io::BufWriter::new(stdin)), child: Some(child) },
++                    );
+                     true
+                 }
+                 Err(_) => false,
+@@ -720,7 +883,10 @@ impl Interp {
+                 .open(key);
+             match f {
+                 Ok(file) => {
+-                    self.outputs.insert(key.to_string(), OutputEnt { writer: Box::new(file), child: None });
++                    self.outputs.insert(
++                        key.to_string(),
++                        OutputEnt { writer: Box::new(std::io::BufWriter::new(file)), child: None },
++                    );
+                     true
+                 }
+                 Err(_) => false,
+@@ -739,7 +905,8 @@ impl Interp {
+             }
+         }
+         if let Some(ent) = self.outputs.remove(key) {
+-            let OutputEnt { writer, child } = ent;
++            let OutputEnt { mut writer, child } = ent;
++            let _ = writer.flush();
+             drop(writer);
+             if let Some(mut child) = child {
+                 rc = child.wait().map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+@@ -762,7 +929,11 @@ impl Interp {
+     }
+ 
+     fn flush_all(&mut self) {
+-        let _ = std::io::stdout().flush();
++        if let Err(e) = self.stdout.flush() {
++            if e.kind() == std::io::ErrorKind::BrokenPipe {
++                std::process::exit(141);
++            }
++        }
+         for (_, ent) in self.outputs.iter_mut() {
+             let _ = ent.writer.flush();
+         }
+@@ -809,7 +980,8 @@ impl Interp {
+                     let ok = name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                         && !name.as_bytes()[0].is_ascii_digit();
+                     if ok {
+-                        self.setvar_str(name, val);
++                        let (name, val) = (name.to_string(), process_escapes(val));
++                        self.setvar_strnum(&name, &val);
+                         self.main_input.argv_pos += 1;
+                         continue;
+                     }
+@@ -986,7 +1158,7 @@ impl Interp {
+             Stmt::Break => self.flow = Flow::Break,
+             Stmt::Continue => self.flow = Flow::Continue,
+             Stmt::Return(e) => {
+-                self.retval = if let Some(e) = e { self.eval(e) } else { value::mknum(0.0) };
++                self.retval = if let Some(e) = e { self.eval(e) } else { value::mkuninit() };
+                 self.flow = Flow::Return;
+             }
+             Stmt::Exit(e) => {
+@@ -1011,7 +1183,9 @@ impl Interp {
+     fn write_output(&mut self, mode: RedirMode, target: Option<&Node>, text: &str) {
+         match mode {
+             RedirMode::None => {
+-                let _ = std::io::stdout().write_all(text.as_bytes());
++                if let Err(e) = self.stdout.write_all(text.as_bytes()) {
++                    self.write_failed(e, "stdout");
++                }
+             }
+             _ => {
+                 let key = {
+@@ -1025,12 +1199,27 @@ impl Interp {
+                     RedirMode::Pipe => 2,
+                     RedirMode::None => unreachable!(),
+                 };
++                if iomode != 2 && (key == "/dev/stdout" || key == "-") {
++                    if let Err(e) = self.stdout.write_all(text.as_bytes()) {
++                        self.write_failed(e, "stdout");
++                    }
++                    return;
++                }
++                if iomode != 2 && key == "/dev/stderr" {
++                    let _ = self.stdout.flush();
++                    let _ = std::io::stderr().write_all(text.as_bytes());
++                    return;
++                }
+                 if !self.io_open_output(&key, iomode) {
+                     eprintln!("mawk: cannot open '{}' for output", key);
+                     std::process::exit(2);
+                 }
+-                if let Some(ent) = self.outputs.get_mut(&key) {
+-                    let _ = ent.writer.write_all(text.as_bytes());
++                let res = match self.outputs.get_mut(&key) {
++                    Some(ent) => ent.writer.write_all(text.as_bytes()),
++                    None => Ok(()),
++                };
++                if let Err(e) = res {
++                    self.write_failed(e, &key);
+                 }
+             }
+         }
+@@ -1153,22 +1342,23 @@ impl Interp {
+             "srand" => {
+                 let seed = if !args.is_empty() {
+                     let v = self.eval(&args[0]);
+-                    value::to_num(&v) as u64
++                    value::to_num(&v)
+                 } else {
+                     std::time::SystemTime::now()
+                         .duration_since(std::time::UNIX_EPOCH)
+-                        .map(|d| d.as_secs())
+-                        .unwrap_or(0)
++                        .map(|d| d.as_secs() as f64)
++                        .unwrap_or(0.0)
+                 };
+-                self.rng = Rng::new(seed);
+-                value::mknum(0.0)
++                self.rng = Rng::new(seed as i64 as u64);
++                let prev = std::mem::replace(&mut self.seed, seed);
++                value::mknum(prev)
+             }
+             "system" => {
+                 let v = self.eval(&args[0]);
+                 let fmt = self.convfmt();
+                 let cmd = value::to_str(&v, &fmt);
+                 self.flush_all();
+-                let status = Command::new("sh").arg("-c").arg(&cmd).status();
++                let status = shell_command(&cmd).status();
+                 let rc = status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+                 value::mknum(rc as f64)
+             }
+@@ -1186,6 +1376,10 @@ impl Interp {
+                 let v = self.eval(&args[0]);
+                 let fmt = self.convfmt();
+                 let key = value::to_str(&v, &fmt);
++                if key == "/dev/stdout" || key == "-" {
++                    let _ = self.stdout.flush();
++                    return value::mknum(0.0);
++                }
+                 match self.outputs.get_mut(&key) {
+                     Some(ent) => {
+                         let _ = ent.writer.flush();
+@@ -1310,69 +1504,80 @@ impl Interp {
+         };
+         let rep_v = self.eval(&args[1]);
+         let repl = value::to_str(&rep_v, &fmt);
+-        let target = args.get(2);
+-        let cur = match target {
+-            Some(t) => {
+-                let v = self.eval_lvalue_current(t);
+-                value::to_str(&v, &fmt)
+-            }
+-            None => self.record.clone(),
++        // Resolve the target once (so `sub(/x/, "y", a[i++])` bumps i once).
++        // A non-lvalue target (e.g. a literal) is matched but not assigned.
++        let (lref, cur) = match args.get(2) {
++            Some(t) => match self.resolve(t) {
++                Some(r) => {
++                    let v = self.lref_get(&r);
++                    (Some(r), value::to_str(&v, &fmt))
++                }
++                None => {
++                    let v = self.eval(t);
++                    (None, value::to_str(&v, &fmt))
++                }
++            },
++            None => (Some(LRef::Field(0)), self.record.clone()),
+         };
+-        let cur_bytes = cur.into_bytes();
+-        let repl_bytes = repl.into_bytes();
+-        let mut out: Vec<u8> = Vec::new();
++        let text = cur.as_bytes();
++        let repl_bytes = repl.as_bytes();
++        let mut out: Vec<u8> = Vec::with_capacity(text.len());
+         let mut pos = 0usize;
++        let mut last_match_end: Option<usize> = None;
+         let mut nsubs = 0i64;
+-        loop {
+-            let remaining = std::str::from_utf8(&cur_bytes[pos..]).unwrap_or("");
+-            match regex_engine::regex_search(&pat, remaining) {
+-                Some((ms, ml)) => {
+-                    out.extend_from_slice(&cur_bytes[pos..pos + ms]);
+-                    let mstart = pos + ms;
+-                    let mend = pos + ms + ml;
+-                    let mut i = 0usize;
+-                    while i < repl_bytes.len() {
+-                        if repl_bytes[i] == b'&' {
+-                            out.extend_from_slice(&cur_bytes[mstart..mend]);
+-                            i += 1;
+-                        } else if repl_bytes[i] == b'\\' && i + 1 < repl_bytes.len() && repl_bytes[i + 1] == b'&' {
+-                            out.push(b'&');
+-                            i += 2;
+-                        } else {
+-                            out.push(repl_bytes[i]);
+-                            i += 1;
+-                        }
+-                    }
+-                    nsubs += 1;
+-                    if ml == 0 {
+-                        if mend < cur_bytes.len() {
+-                            out.push(cur_bytes[mend]);
+-                        }
+-                        pos = mend + 1;
+-                    } else {
+-                        pos = mend;
+-                    }
+-                    if !is_global {
+-                        if pos < cur_bytes.len() {
+-                            out.extend_from_slice(&cur_bytes[pos..]);
+-                        }
+-                        break;
+-                    }
+-                    if pos >= cur_bytes.len() {
+-                        break;
+-                    }
++        // POSIX gsub: an empty match directly after the previous match is not
++        // replaced ("abc" gsub(/b*/,"-") -> "-a-c-"), and an empty match at the
++        // very end is (gsub(/x*/,"-","abc") -> "-a-b-c-").
++        while pos <= text.len() {
++            let (ms, ml) = match regex_engine::regex_search_at(&pat, text, pos) {
++                Some(m) => m,
++                None => break,
++            };
++            if ml == 0 && last_match_end == Some(ms) {
++                if ms < text.len() {
++                    out.push(text[ms]);
+                 }
+-                None => {
+-                    out.extend_from_slice(&cur_bytes[pos..]);
+-                    break;
++                pos = ms + 1;
++                continue;
++            }
++            out.extend_from_slice(&text[pos..ms]);
++            let mut i = 0usize;
++            while i < repl_bytes.len() {
++                if repl_bytes[i] == b'\\' && i + 1 < repl_bytes.len() && repl_bytes[i + 1] == b'&' {
++                    out.push(b'&');
++                    i += 2;
++                } else if repl_bytes[i] == b'\\' && i + 1 < repl_bytes.len() && repl_bytes[i + 1] == b'\\' {
++                    out.push(b'\\');
++                    i += 2;
++                } else if repl_bytes[i] == b'&' {
++                    out.extend_from_slice(&text[ms..ms + ml]);
++                    i += 1;
++                } else {
++                    out.push(repl_bytes[i]);
++                    i += 1;
+                 }
+             }
++            nsubs += 1;
++            last_match_end = Some(ms + ml);
++            if ml == 0 {
++                if ms < text.len() {
++                    out.push(text[ms]);
++                }
++                pos = ms + 1;
++            } else {
++                pos = ms + ml;
++            }
++            if !is_global {
++                break;
++            }
++        }
++        if pos < text.len() {
++            out.extend_from_slice(&text[pos..]);
+         }
+         if nsubs > 0 {
+-            let outs = String::from_utf8_lossy(&out).into_owned();
+-            match target {
+-                Some(t) => self.assign_to(t, value::mkstring(outs)),
+-                None => self.set_record(&outs),
++            if let Some(r) = lref {
++                let outs = String::from_utf8_lossy(&out).into_owned();
++                self.lref_set(r, value::mkstring(outs));
+             }
+         }
+         value::mknum(nsubs as f64)
+@@ -1380,19 +1585,30 @@ impl Interp {
+ 
+     // ---- sprintf / printf ----
+ 
++    fn next_arg(&mut self, args: &[Node], ai: &mut usize) -> Option<Value> {
++        if *ai < args.len() {
++            let v = self.eval(&args[*ai]);
++            *ai += 1;
++            Some(v)
++        } else {
++            None
++        }
++    }
++
+     fn do_sprintf(&mut self, fmt: &str, args: &[Node]) -> String {
++        // Work in bytes so non-ASCII text in the format survives untouched.
+         let fb = fmt.as_bytes();
+-        let mut out = String::new();
++        let mut out: Vec<u8> = Vec::with_capacity(fb.len() + 16);
+         let mut ai = 0usize;
+         let mut i = 0usize;
+         while i < fb.len() {
+             if fb[i] != b'%' {
+-                out.push(fb[i] as char);
++                out.push(fb[i]);
+                 i += 1;
+                 continue;
+             }
+             if i + 1 < fb.len() && fb[i + 1] == b'%' {
+-                out.push('%');
++                out.push(b'%');
+                 i += 2;
+                 continue;
+             }
+@@ -1404,78 +1620,73 @@ impl Interp {
+                 i += 1;
+             }
+             let mut width: Option<i64> = None;
+-            let wstart = i;
+-            while i < fb.len() && fb[i].is_ascii_digit() {
++            if i < fb.len() && fb[i] == b'*' {
+                 i += 1;
+-            }
+-            if i > wstart {
+-                width = std::str::from_utf8(&fb[wstart..i]).ok().and_then(|s| s.parse().ok());
++                let w = self.next_arg(args, &mut ai).map(|v| value::to_num(&v) as i64).unwrap_or(0);
++                if w < 0 {
++                    flags.push('-');
++                }
++                width = Some(w.abs());
++            } else {
++                let wstart = i;
++                while i < fb.len() && fb[i].is_ascii_digit() {
++                    i += 1;
++                }
++                if i > wstart {
++                    width = std::str::from_utf8(&fb[wstart..i]).ok().and_then(|s| s.parse().ok());
++                }
+             }
+             let mut precision: Option<i64> = None;
+             if i < fb.len() && fb[i] == b'.' {
+                 i += 1;
+-                let pstart = i;
+-                while i < fb.len() && fb[i].is_ascii_digit() {
++                if i < fb.len() && fb[i] == b'*' {
+                     i += 1;
++                    let p = self.next_arg(args, &mut ai).map(|v| value::to_num(&v) as i64).unwrap_or(0);
++                    precision = if p < 0 { None } else { Some(p) };
++                } else {
++                    let pstart = i;
++                    while i < fb.len() && fb[i].is_ascii_digit() {
++                        i += 1;
++                    }
++                    let pstr = std::str::from_utf8(&fb[pstart..i]).unwrap_or("");
++                    precision = Some(if pstr.is_empty() { 0 } else { pstr.parse().unwrap_or(0) });
+                 }
+-                let pstr = std::str::from_utf8(&fb[pstart..i]).unwrap_or("");
+-                precision = Some(if pstr.is_empty() { 0 } else { pstr.parse().unwrap_or(0) });
++            }
++            // C length modifiers are accepted and ignored: %ld, %lld, %hd
++            while i < fb.len() && matches!(fb[i], b'l' | b'h' | b'L' | b'q' | b'j' | b'z') {
++                i += 1;
+             }
+             if i >= fb.len() {
+-                out.push_str(std::str::from_utf8(&fb[spec_start..]).unwrap_or(""));
++                out.extend_from_slice(&fb[spec_start..]);
+                 break;
+             }
+             let conv = fb[i] as char;
+             i += 1;
+             match conv {
+                 'd' | 'i' | 'o' | 'x' | 'X' | 'u' => {
+-                    let v = if ai < args.len() {
+-                        let r = self.eval(&args[ai]);
+-                        ai += 1;
+-                        r
+-                    } else {
+-                        value::mknum(0.0)
+-                    };
+-                    out.push_str(&fmt_int(&flags, width, precision, conv, &v));
++                    let v = self.next_arg(args, &mut ai).unwrap_or_else(|| value::mknum(0.0));
++                    out.extend_from_slice(fmt_int(&flags, width, precision, conv, &v).as_bytes());
+                 }
+                 'f' | 'F' | 'e' | 'E' | 'g' | 'G' => {
+-                    let v = if ai < args.len() {
+-                        let r = self.eval(&args[ai]);
+-                        ai += 1;
+-                        r
+-                    } else {
+-                        value::mknum(0.0)
+-                    };
+-                    out.push_str(&fmt_float(&flags, width, precision, conv, &v));
++                    let v = self.next_arg(args, &mut ai).unwrap_or_else(|| value::mknum(0.0));
++                    out.extend_from_slice(fmt_float(&flags, width, precision, conv, &v).as_bytes());
+                 }
+                 's' => {
+-                    let v = if ai < args.len() {
+-                        let r = self.eval(&args[ai]);
+-                        ai += 1;
+-                        r
+-                    } else {
+-                        value::mkstr("")
+-                    };
++                    let v = self.next_arg(args, &mut ai).unwrap_or_else(|| value::mkstr(""));
+                     let fmtc = self.convfmt();
+                     let s = value::to_str(&v, &fmtc);
+-                    out.push_str(&fmt_str(&flags, width, precision, &s));
++                    out.extend_from_slice(fmt_str(&flags, width, precision, &s).as_bytes());
+                 }
+                 'c' => {
+-                    let v = if ai < args.len() {
+-                        let r = self.eval(&args[ai]);
+-                        ai += 1;
+-                        r
+-                    } else {
+-                        value::mkstr("")
+-                    };
+-                    out.push_str(&fmt_char(&flags, width, &v));
++                    let v = self.next_arg(args, &mut ai).unwrap_or_else(|| value::mkstr(""));
++                    out.extend_from_slice(&fmt_char(&flags, width, &v));
+                 }
+                 _ => {
+-                    out.push_str(std::str::from_utf8(&fb[spec_start..i]).unwrap_or(""));
++                    out.extend_from_slice(&fb[spec_start..i]);
+                 }
+             }
+         }
+-        out
++        String::from_utf8_lossy(&out).into_owned()
+     }
+ }
+ 
+@@ -1484,6 +1695,9 @@ impl Interp {
+ fn awk_split(s: &str, fs: &str) -> Vec<String> {
+     let bytes = s.as_bytes();
+     let mut result = Vec::new();
++    if bytes.is_empty() {
++        return result; // an empty record has no fields, whatever FS is
++    }
+     if fs == " " {
+         let mut i = 0usize;
+         while i < bytes.len() {
+@@ -1514,20 +1728,22 @@ fn awk_split(s: &str, fs: &str) -> Vec<String> {
+             start = i + 1;
+         }
+     } else {
++        // Search the whole record from an offset so `^` in FS only matches
++        // at the start; empty matches never split.
+         let mut pos = 0usize;
+-        loop {
+-            let remaining = std::str::from_utf8(&bytes[pos..]).unwrap_or("");
+-            match regex_engine::regex_search(fs, remaining) {
++        let mut from = 0usize;
++        while from <= bytes.len() {
++            match regex_engine::regex_search_at(fs, bytes, from) {
+                 Some((ms, ml)) if ml > 0 => {
+-                    result.push(String::from_utf8_lossy(&bytes[pos..pos + ms]).into_owned());
+-                    pos += ms + ml;
+-                }
+-                _ => {
+-                    result.push(String::from_utf8_lossy(&bytes[pos..]).into_owned());
+-                    break;
++                    result.push(String::from_utf8_lossy(&bytes[pos..ms]).into_owned());
++                    pos = ms + ml;
++                    from = pos;
+                 }
++                Some((ms, _)) => from = ms + 1,
++                None => break,
+             }
+         }
++        result.push(String::from_utf8_lossy(&bytes[pos..]).into_owned());
+     }
+     result
+ }
+@@ -1821,17 +2037,26 @@ fn fmt_str(flags: &str, width: Option<i64>, precision: Option<i64>, s: &str) ->
+     pad(out, width, left, false, false)
+ }
+ 
+-fn fmt_char(flags: &str, width: Option<i64>, v: &Value) -> String {
++/// %c: a number prints the byte with that value (mod 256, like C awk);
++/// a string prints its first character (whole UTF-8 sequence).
++fn fmt_char(flags: &str, width: Option<i64>, v: &Value) -> Vec<u8> {
+     let left = flags.contains('-');
+-    let ch = match &v.str {
+-        Some(s) => s.chars().next().unwrap_or('\0'),
+-        None => {
+-            let n = v.num as i64;
+-            char::from_u32(n as u32).unwrap_or('\0')
++    let body: Vec<u8> = if value::is_numericish(v) && !v.uninit && v.str.is_none() {
++        let n = (value::to_num(v) as i64 & 0xFF) as u8;
++        if n == 0 { Vec::new() } else { vec![n] }
++    } else {
++        match &v.str {
++            Some(s) => s.chars().next().map(|c| c.to_string().into_bytes()).unwrap_or_default(),
++            None => Vec::new(),
+         }
+     };
+-    let s = if ch == '\0' { String::new() } else { ch.to_string() };
+-    pad(s, width, left, false, false)
++    let w = width.unwrap_or(0).max(0) as usize;
++    let len = if body.is_empty() { 0 } else { 1 };
++    if len >= w {
++        return body;
++    }
++    let pad = vec![b' '; w - len];
++    if left { [body, pad].concat() } else { [pad, body].concat() }
+ }
+ 
+ /// Formats a single f64 through a printf-style format string (used for
+@@ -1894,7 +2119,7 @@ pub fn sprintf_one_num(fmt: &str, d: f64) -> String {
+             'd' | 'i' | 'o' | 'x' | 'X' | 'u' => out.push_str(&fmt_int(&flags, width, precision, conv, &v)),
+             'f' | 'F' | 'e' | 'E' | 'g' | 'G' => out.push_str(&fmt_float(&flags, width, precision, conv, &v)),
+             's' => out.push_str(&fmt_str(&flags, width, precision, &value::to_str(&v, "%.6g"))),
+-            'c' => out.push_str(&fmt_char(&flags, width, &v)),
++            'c' => out.push_str(&String::from_utf8_lossy(&fmt_char(&flags, width, &v))),
+             _ => out.push_str(std::str::from_utf8(&fb[spec_start..i]).unwrap_or("")),
+         }
+     }
+@@ -1907,42 +2132,20 @@ impl Interp {
+     fn rule_matches(&mut self, r: &Rule) -> bool {
+         match &r.ptype {
+             PType::Always => true,
+-            PType::Ere(pat) => {
+-                let rec = self.record.clone();
+-                regex_engine::regex_match_bool(pat, &rec)
+-            }
+             PType::Expr(e) => {
+                 let v = self.eval(e);
+                 value::truthy(&v)
+             }
+             PType::Range(e1, e2) => {
+                 if !r.range_active.get() {
+-                    let t1 = match e1 {
+-                        Node::Ere(p) => {
+-                            let rec = self.record.clone();
+-                            regex_engine::regex_match_bool(p, &rec)
+-                        }
+-                        _ => {
+-                            let v = self.eval(e1);
+-                            value::truthy(&v)
+-                        }
+-                    };
+-                    if !t1 {
++                    let v = self.eval(e1);
++                    if !value::truthy(&v) {
+                         return false;
+                     }
+                     r.range_active.set(true);
+                 }
+-                let t2 = match e2 {
+-                    Node::Ere(p) => {
+-                        let rec = self.record.clone();
+-                        regex_engine::regex_match_bool(p, &rec)
+-                    }
+-                    _ => {
+-                        let v = self.eval(e2);
+-                        value::truthy(&v)
+-                    }
+-                };
+-                if t2 {
++                let v = self.eval(e2);
++                if value::truthy(&v) {
+                     r.range_active.set(false);
+                 }
+                 true
+@@ -2058,6 +2261,11 @@ pub fn run(argv: &[String]) -> Result<i32, String> {
+         let a = argv[i].clone();
+         if a == "--" {
+             i += 1;
++            if !have_prog && i < argv.len() {
++                progbuf.push_str(&argv[i]);
++                have_prog = true;
++                i += 1;
++            }
+             break;
+         }
+         if a.starts_with("-f") {
+@@ -2085,9 +2293,12 @@ pub fn run(argv: &[String]) -> Result<i32, String> {
+             } else {
+                 break;
+             };
+-            if let Some(eq) = assign.find('=') {
+-                let (n, v) = assign.split_at(eq);
+-                preassign.push((n.to_string(), v[1..].to_string()));
++            match assign.find('=') {
++                Some(eq) => {
++                    let (n, v) = assign.split_at(eq);
++                    preassign.push((n.to_string(), v[1..].to_string()));
++                }
++                None => return Err(format!("improper assignment: -v {}", assign)),
+             }
+             i += 1;
+             continue;
+@@ -2119,26 +2330,18 @@ pub fn run(argv: &[String]) -> Result<i32, String> {
+         return Ok(2);
+     }
+     if let Some(fs) = fsopt {
+-        let mut fb = String::new();
+-        let mut chars = fs.chars().peekable();
+-        while let Some(c) = chars.next() {
+-            if c == '\\' {
+-                if let Some(&nc) = chars.peek() {
+-                    chars.next();
+-                    match nc {
+-                        't' => fb.push('\t'),
+-                        'n' => fb.push('\n'),
+-                        _ => fb.push(nc),
+-                    }
+-                    continue;
+-                }
+-            }
+-            fb.push(c);
+-        }
++        // POSIX: -Ft means tab
++        let fb = if fs == "t" { "\t".to_string() } else { process_escapes(&fs) };
+         interp.setvar_str("FS", &fb);
+     }
+     for (n, v) in preassign {
+-        interp.setvar_str(&n, &v);
++        let ok = !n.is_empty()
++            && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
++            && !n.as_bytes()[0].is_ascii_digit();
++        if !ok {
++            return Err(format!("improper assignment: -v {}={}", n, v));
++        }
++        interp.setvar_strnum(&n, &process_escapes(&v));
+     }
+ 
+     let program = Parser::new(&progbuf).parse_program();
+diff --git a/src/lexer.rs b/src/lexer.rs
+index 1439d58..d3f89d3 100644
+--- a/src/lexer.rs
++++ b/src/lexer.rs
+@@ -4,7 +4,7 @@
+ 
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum TokType {
+-    Eof, Num, Str, Ere, Ident, FuncName,
++    Eof, Num, Str, Ere, Ident, FuncName, Builtin,
+     Begin, End, If, Else, While, Do, For, Print, Printf,
+     Next, NextFile, Exit, Break, Continue, Delete, In,
+     Function, Getline, Return,
+@@ -21,23 +21,50 @@ pub struct Token {
+     pub ty: TokType,
+     pub num: f64,
+     pub text: String,
++    pub line: usize,
+ }
+ 
+-impl Token {
+-    fn simple(ty: TokType) -> Token {
+-        Token { ty, num: 0.0, text: String::new() }
+-    }
++/// Builtin function names with their (min, max) argument counts.
++/// `usize::MAX` means variadic.
++pub const BUILTINS: &[(&str, usize, usize)] = &[
++    ("length", 0, 1),
++    ("substr", 2, 3),
++    ("index", 2, 2),
++    ("split", 2, 3),
++    ("sub", 2, 3),
++    ("gsub", 2, 3),
++    ("match", 2, 2),
++    ("sprintf", 1, usize::MAX),
++    ("sin", 1, 1),
++    ("cos", 1, 1),
++    ("atan2", 2, 2),
++    ("exp", 1, 1),
++    ("log", 1, 1),
++    ("sqrt", 1, 1),
++    ("int", 1, 1),
++    ("rand", 0, 0),
++    ("srand", 0, 1),
++    ("tolower", 1, 1),
++    ("toupper", 1, 1),
++    ("system", 1, 1),
++    ("close", 1, 1),
++    ("fflush", 0, 1),
++];
++
++pub fn builtin_arity(name: &str) -> Option<(usize, usize)> {
++    BUILTINS.iter().find(|(n, _, _)| *n == name).map(|&(_, lo, hi)| (lo, hi))
+ }
+ 
+ #[derive(Clone)]
+ pub struct Lexer {
+     src: Vec<u8>,
+     pos: usize,
++    pub line: usize,
+ }
+ 
+ impl Lexer {
+     pub fn new(src: &str) -> Lexer {
+-        Lexer { src: src.as_bytes().to_vec(), pos: 0 }
++        Lexer { src: src.as_bytes().to_vec(), pos: 0, line: 1 }
+     }
+ 
+     fn cur(&self) -> u8 {
+@@ -48,15 +75,21 @@ impl Lexer {
+         if p < self.src.len() { self.src[p] } else { 0 }
+     }
+ 
++    fn tok(&self, ty: TokType) -> Token {
++        Token { ty, num: 0.0, text: String::new(), line: self.line }
++    }
++
+     fn skip_ws_comments(&mut self) {
+         loop {
+             while self.cur() == b' '
+                 || self.cur() == b'\t'
+                 || self.cur() == b'\r'
+                 || (self.cur() == b'\\' && self.at(1) == b'\n')
++                || (self.cur() == b'\\' && self.at(1) == b'\r' && self.at(2) == b'\n')
+             {
+                 if self.cur() == b'\\' {
+-                    self.pos += 2;
++                    self.pos += if self.at(1) == b'\r' { 3 } else { 2 };
++                    self.line += 1;
+                 } else {
+                     self.pos += 1;
+                 }
+@@ -71,55 +104,113 @@ impl Lexer {
+         }
+     }
+ 
++    /// Reads one escape sequence (the backslash has already been consumed)
++    /// and appends the resulting byte(s). Unknown escapes keep the backslash,
++    /// as mawk does, so "\." still reaches a dynamic regex as a literal dot.
++    fn read_escape(&mut self, out: &mut Vec<u8>) {
++        let e = self.cur();
++        match e {
++            b'n' => { out.push(b'\n'); self.pos += 1; }
++            b't' => { out.push(b'\t'); self.pos += 1; }
++            b'r' => { out.push(b'\r'); self.pos += 1; }
++            b'a' => { out.push(7); self.pos += 1; }
++            b'b' => { out.push(8); self.pos += 1; }
++            b'f' => { out.push(12); self.pos += 1; }
++            b'v' => { out.push(11); self.pos += 1; }
++            b'\\' => { out.push(b'\\'); self.pos += 1; }
++            b'"' => { out.push(b'"'); self.pos += 1; }
++            b'0'..=b'7' => {
++                let mut v: u32 = 0;
++                let mut n = 0;
++                while n < 3 && (b'0'..=b'7').contains(&self.cur()) {
++                    v = v * 8 + (self.cur() - b'0') as u32;
++                    self.pos += 1;
++                    n += 1;
++                }
++                out.push((v & 0xFF) as u8);
++            }
++            b'x' if self.at(1).is_ascii_hexdigit() => {
++                self.pos += 1;
++                let mut v: u32 = 0;
++                let mut n = 0;
++                while n < 2 && self.cur().is_ascii_hexdigit() {
++                    v = v * 16 + (self.cur() as char).to_digit(16).unwrap();
++                    self.pos += 1;
++                    n += 1;
++                }
++                out.push(v as u8);
++            }
++            b'\n' => {
++                // backslash-newline inside a string: line continuation
++                self.pos += 1;
++                self.line += 1;
++            }
++            0 => out.push(b'\\'),
++            _ => {
++                out.push(b'\\');
++                out.push(e);
++                self.pos += 1;
++            }
++        }
++    }
++
+     /// prev_significant tells us whether '/' should be interpreted as division
+     /// (true) or as the start of an ERE literal (false).
+     pub fn next(&mut self, prev_significant: bool) -> Token {
+         self.skip_ws_comments();
+         let c = self.cur();
+         if c == 0 {
+-            return Token::simple(TokType::Eof);
++            return self.tok(TokType::Eof);
+         }
+         if c == b'\n' {
++            let t = self.tok(TokType::Newline);
+             self.pos += 1;
+-            return Token::simple(TokType::Newline);
++            self.line += 1;
++            return t;
+         }
+         if c == b'"' {
++            let line = self.line;
+             self.pos += 1;
+-            let mut s = String::new();
++            let mut s: Vec<u8> = Vec::new();
+             while self.cur() != 0 && self.cur() != b'"' {
+-                let mut ch = self.cur();
++                let ch = self.cur();
+                 self.pos += 1;
+-                if ch == b'\\' && self.cur() != 0 {
+-                    let e = self.cur();
+-                    self.pos += 1;
+-                    ch = match e {
+-                        b'n' => b'\n',
+-                        b't' => b'\t',
+-                        b'r' => b'\r',
+-                        b'\\' => b'\\',
+-                        b'"' => b'"',
+-                        b'/' => b'/',
+-                        _ => e,
+-                    };
++                if ch == b'\\' {
++                    self.read_escape(&mut s);
++                } else {
++                    if ch == b'\n' {
++                        eprintln!("mawk: line {}: runaway string constant", line);
++                        std::process::exit(2);
++                    }
++                    s.push(ch);
+                 }
+-                s.push(ch as char);
+             }
+             if self.cur() == b'"' {
+                 self.pos += 1;
++            } else {
++                eprintln!("mawk: line {}: runaway string constant", line);
++                std::process::exit(2);
+             }
+-            return Token { ty: TokType::Str, num: 0.0, text: s };
++            return Token { ty: TokType::Str, num: 0.0, text: String::from_utf8_lossy(&s).into_owned(), line };
+         }
+         if c.is_ascii_digit() || (c == b'.' && self.at(1).is_ascii_digit()) {
+             let start = self.pos;
+-            let rest = std::str::from_utf8(&self.src[start..]).unwrap_or("");
++            // Only scan the ASCII number prefix; never hand parse_leading_double
++            // something it could read as "inf"/"nan".
++            let mut end = start;
++            while end < self.src.len()
++                && (self.src[end].is_ascii_alphanumeric() || matches!(self.src[end], b'.' | b'+' | b'-'))
++            {
++                end += 1;
++            }
++            let rest = std::str::from_utf8(&self.src[start..end]).unwrap_or("");
+             if let Some((val, remainder)) = crate::value::parse_leading_double(rest) {
+                 let consumed = rest.len() - remainder.len();
+                 self.pos = start + consumed;
+-                return Token { ty: TokType::Num, num: val, text: String::new() };
++                return Token { ty: TokType::Num, num: val, text: String::new(), line: self.line };
+             }
+-            // fallback: shouldn't happen
+             self.pos += 1;
+-            return Token { ty: TokType::Num, num: 0.0, text: String::new() };
++            return Token { ty: TokType::Num, num: 0.0, text: String::new(), line: self.line };
+         }
+         if c.is_ascii_alphabetic() || c == b'_' {
+             let start = self.pos;
+@@ -150,37 +241,74 @@ impl Lexer {
+                 _ => None,
+             };
+             if let Some(tt) = kw {
+-                return Token::simple(tt);
++                return self.tok(tt);
+             }
++            // Builtins are reserved words: `length` works without parens and
++            // `substr ($0, 1)` may have a space before the paren.
++            if builtin_arity(&word).is_some() {
++                return Token { ty: TokType::Builtin, num: 0.0, text: word, line: self.line };
++            }
++            // User function calls must have '(' immediately after the name.
+             if self.cur() == b'(' {
+-                return Token { ty: TokType::FuncName, num: 0.0, text: word };
++                return Token { ty: TokType::FuncName, num: 0.0, text: word, line: self.line };
+             }
+-            return Token { ty: TokType::Ident, num: 0.0, text: word };
++            return Token { ty: TokType::Ident, num: 0.0, text: word, line: self.line };
+         }
+         if c == b'/' && !prev_significant {
++            let line = self.line;
+             self.pos += 1;
+-            let mut s = String::new();
+-            while self.cur() != 0 && self.cur() != b'/' {
+-                let mut ch = self.cur();
++            let mut s: Vec<u8> = Vec::new();
++            let mut in_class = false;
++            while self.cur() != 0 && (self.cur() != b'/' || in_class) {
++                let ch = self.cur();
++                if ch == b'\n' {
++                    break;
++                }
+                 self.pos += 1;
+                 if ch == b'\\' && self.cur() != 0 {
+-                    s.push(ch as char);
+-                    ch = self.cur();
++                    // "\/" is just an escaped slash; keep other escapes for the regex engine
++                    if self.cur() == b'/' {
++                        s.push(b'/');
++                    } else {
++                        s.push(b'\\');
++                        s.push(self.cur());
++                    }
+                     self.pos += 1;
++                    continue;
+                 }
+-                s.push(ch as char);
++                if ch == b'[' && !in_class {
++                    in_class = true;
++                    s.push(ch);
++                    // a ']' right after '[' or '[^' is a literal member
++                    if self.cur() == b'^' {
++                        s.push(b'^');
++                        self.pos += 1;
++                    }
++                    if self.cur() == b']' {
++                        s.push(b']');
++                        self.pos += 1;
++                    }
++                    continue;
++                }
++                if ch == b']' && in_class {
++                    in_class = false;
++                }
++                s.push(ch);
+             }
+             if self.cur() == b'/' {
+                 self.pos += 1;
++            } else {
++                eprintln!("mawk: line {}: runaway regular expression /{} ...", line, String::from_utf8_lossy(&s));
++                std::process::exit(2);
+             }
+-            return Token { ty: TokType::Ere, num: 0.0, text: s };
++            return Token { ty: TokType::Ere, num: 0.0, text: String::from_utf8_lossy(&s).into_owned(), line };
+         }
+ 
+         macro_rules! op2 {
+             ($a:expr, $b:expr, $tt:expr) => {
+                 if c == $a && self.at(1) == $b {
+                     self.pos += 2;
+-                    return Token::simple($tt);
++                    return self.tok($tt);
+                 }
+             };
+         }
+@@ -227,18 +355,18 @@ impl Lexer {
+             b':' => TokType::Colon,
+             b'|' => TokType::Pipe,
+             _ => {
+-                eprintln!("mawk: unexpected character '{}'", c as char);
++                eprintln!("mawk: line {}: unexpected character '{}'", self.line, c as char);
+                 std::process::exit(2);
+             }
+         };
+-        Token::simple(ty)
++        self.tok(ty)
+     }
+ }
+ 
+ pub fn token_is_value_end(t: TokType) -> bool {
+     matches!(
+         t,
+-        TokType::Num | TokType::Str | TokType::Ident | TokType::RParen | TokType::RBracket
++        TokType::Num | TokType::Str | TokType::Ident | TokType::Builtin | TokType::RParen | TokType::RBracket
+             | TokType::Dollar | TokType::Incr | TokType::Decr
+     )
+ }
+diff --git a/src/main.rs b/src/main.rs
+index 1565682..9bb71a6 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -17,13 +17,43 @@ mod interp;
+ use std::env;
+ use std::process::ExitCode;
+ 
++/// The tree-walking evaluator and the backtracking regex matcher both
++/// recurse; run on a large stack so deep recursion and long input lines
++/// don't overflow the default 8 MB main-thread stack.
++const INTERP_STACK_SIZE: usize = 512 * 1024 * 1024;
++
++#[cfg(unix)]
++fn restore_sigpipe() {
++    // Rust ignores SIGPIPE by default; a C awk dies quietly when the reader
++    // of its output goes away (`awk ... | head`). Restore that behaviour.
++    unsafe extern "C" {
++        fn signal(signum: i32, handler: usize) -> usize;
++    }
++    const SIGPIPE: i32 = 13;
++    const SIG_DFL: usize = 0;
++    unsafe {
++        signal(SIGPIPE, SIG_DFL);
++    }
++}
++
++#[cfg(not(unix))]
++fn restore_sigpipe() {}
++
+ fn main() -> ExitCode {
+-    let args: Vec<String> = env::args().collect();
+-    match interp::run(&args) {
+-        Ok(code) => ExitCode::from(code as u8),
+-        Err(msg) => {
++    restore_sigpipe();
++    let args: Vec<String> = env::args_os().map(|a| a.to_string_lossy().into_owned()).collect();
++    let result = std::thread::Builder::new()
++        .name("mawk".into())
++        .stack_size(INTERP_STACK_SIZE)
++        .spawn(move || interp::run(&args))
++        .expect("failed to start interpreter thread")
++        .join();
++    match result {
++        Ok(Ok(code)) => ExitCode::from((code & 0xFF) as u8),
++        Ok(Err(msg)) => {
+             eprintln!("mawk: {}", msg);
+             ExitCode::from(2)
+         }
++        Err(_) => ExitCode::from(2), // the panic message was already printed
+     }
+ }
+diff --git a/src/parser.rs b/src/parser.rs
+index 789cf74..ac7303e 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -1,8 +1,12 @@
+ // ----------------------------------------------------------------------
+-// Parser: recursive-descent, mirrors mawk.c's parser closely.
++// Parser: recursive descent.
++//
++// Expression precedence, lowest to highest (POSIX awk):
++//   assignment  ?:  ||  &&  in  ~ !~  relational  concatenation
++//   + -  * / %  unary ! + -  ^  ++ --  $  grouping
+ // ----------------------------------------------------------------------
+ use crate::ast::*;
+-use crate::lexer::{token_is_value_end, Lexer, Token, TokType};
++use crate::lexer::{builtin_arity, token_is_value_end, Lexer, Token, TokType};
+ use std::collections::HashMap;
+ 
+ pub struct Parser {
+@@ -12,8 +16,15 @@ pub struct Parser {
+     suppress_gt: bool,
+     funcs: HashMap<String, FuncDef>,
+     rules: Vec<Rule>,
++    loop_depth: usize,
++    in_function: bool,
++    in_begin_end: bool,
++    /// user-function calls seen: (name, nargs, line) -- validated after parsing
++    calls: Vec<(String, usize, usize)>,
+ }
+ 
++type Snapshot = (Lexer, Token, bool);
++
+ impl Parser {
+     pub fn new(src: &str) -> Parser {
+         let mut lex = Lexer::new(src);
+@@ -26,19 +37,44 @@ impl Parser {
+             suppress_gt: false,
+             funcs: HashMap::new(),
+             rules: Vec::new(),
++            loop_depth: 0,
++            in_function: false,
++            in_begin_end: false,
++            calls: Vec::new(),
+         }
+     }
+ 
++    fn error_at(&self, line: usize, msg: &str) -> ! {
++        eprintln!("mawk: line {}: {}", line, msg);
++        std::process::exit(2);
++    }
++
++    fn error(&self, msg: &str) -> ! {
++        self.error_at(self.cur.line, msg)
++    }
++
++    fn syntax_error(&self) -> ! {
++        let near = match self.cur.ty {
++            TokType::Eof => "end of file".to_string(),
++            TokType::Newline => "end of line".to_string(),
++            TokType::Str => format!("\"{}\"", self.cur.text),
++            TokType::Ere => format!("/{}/", self.cur.text),
++            TokType::Num => format!("{}", self.cur.num),
++            TokType::Ident | TokType::FuncName | TokType::Builtin => self.cur.text.clone(),
++            t => tok_text(t).to_string(),
++        };
++        self.error(&format!("syntax error at or near {}", near))
++    }
++
+     fn advance(&mut self) {
+         let t = self.lex.next(self.prev_significant);
+         self.prev_significant = token_is_value_end(t.ty);
+         self.cur = t;
+     }
+ 
+-    fn expect(&mut self, t: TokType, what: &str) {
++    fn expect(&mut self, t: TokType) {
+         if self.cur.ty != t {
+-            eprintln!("mawk: parse error, expected {}", what);
+-            std::process::exit(2);
++            self.syntax_error();
+         }
+         self.advance();
+     }
+@@ -54,16 +90,24 @@ impl Parser {
+         }
+     }
+ 
+-    // Snapshot for backtracking: clone the whole lexer (cheap: a Vec<u8> + pos).
+-    fn save(&self) -> (Lexer, Token, bool) {
++    // Snapshot for backtracking: clone the whole lexer (a Vec<u8> + pos).
++    fn save(&self) -> Snapshot {
+         (self.lex.clone(), self.cur.clone(), self.prev_significant)
+     }
+-    fn restore(&mut self, s: (Lexer, Token, bool)) {
++    fn restore(&mut self, s: Snapshot) {
+         self.lex = s.0;
+         self.cur = s.1;
+         self.prev_significant = s.2;
+     }
+ 
++    fn is_lvalue(n: &Node) -> bool {
++        match n {
++            Node::Var(_) | Node::ArrRef(_, _) | Node::Field(_) => true,
++            Node::Group(inner) => Self::is_lvalue(inner),
++            _ => false,
++        }
++    }
++
+     // ---- expression list helpers ----
+ 
+     fn parse_expr_list(&mut self, endtok: TokType) -> Vec<Node> {
+@@ -72,7 +116,7 @@ impl Parser {
+         if self.cur.ty != endtok {
+             loop {
+                 self.skip_newlines();
+-                v.push(self.parse_ternary());
++                v.push(self.parse_expr());
+                 self.skip_newlines();
+                 if self.cur.ty == TokType::Comma {
+                     self.advance();
+@@ -84,197 +128,254 @@ impl Parser {
+         v
+     }
+ 
+-    fn starts_getline_target(&self) -> bool {
+-        self.cur.ty == TokType::Dollar || self.cur.ty == TokType::Ident
++    fn array_name_after_in(&mut self) -> String {
++        if self.cur.ty != TokType::Ident {
++            self.error("expected array name after 'in'");
++        }
++        let n = self.cur.text.clone();
++        self.advance();
++        n
+     }
+ 
+-    fn parse_lvalue_only(&mut self) -> Option<Node> {
+-        if self.cur.ty == TokType::Dollar {
+-            self.advance();
+-            let idx = self.parse_unary_lvalue();
+-            return Some(Node::Field(Box::new(idx)));
+-        }
+-        if self.cur.ty == TokType::Ident {
+-            let name = self.cur.text.clone();
+-            self.advance();
+-            if self.cur.ty == TokType::LBracket {
++    fn parse_getline_target(&mut self) -> Option<Node> {
++        match self.cur.ty {
++            TokType::Dollar => {
++                self.advance();
++                Some(Node::Field(Box::new(self.parse_dollar_operand())))
++            }
++            TokType::Ident => {
++                let name = self.cur.text.clone();
+                 self.advance();
+-                let idxs = self.parse_expr_list(TokType::RBracket);
+-                self.expect(TokType::RBracket, "]");
+-                return Some(Node::ArrRef(name, idxs));
++                if self.cur.ty == TokType::LBracket {
++                    self.advance();
++                    let idxs = self.parse_expr_list(TokType::RBracket);
++                    self.expect(TokType::RBracket);
++                    Some(Node::ArrRef(name, idxs))
++                } else {
++                    Some(Node::Var(name))
++                }
+             }
+-            return Some(Node::Var(name));
++            _ => None,
+         }
+-        None
+-    }
+-
+-    fn parse_unary_lvalue(&mut self) -> Node {
+-        self.parse_primary()
+     }
+ 
+-    // ---- primary / expr chain (precedence climbing, mirrors C) ----
++    // ---- primaries ----
+ 
+-    fn parse_primary(&mut self) -> Node {
+-        if self.cur.ty == TokType::Getline {
+-            self.advance();
+-            let target = if self.starts_getline_target() {
+-                self.parse_lvalue_only()
+-            } else {
+-                None
+-            };
+-            if self.cur.ty == TokType::Lt {
++    /// A primary expression with no prefix/postfix operators.
++    fn parse_base(&mut self) -> Node {
++        match self.cur.ty {
++            TokType::Getline => {
+                 self.advance();
+-                let save = self.suppress_gt;
+-                self.suppress_gt = false;
+-                let file = self.parse_unary_lvalue();
+-                self.suppress_gt = save;
+-                return Node::Getline(target.map(Box::new), Some(Box::new(file)), 1);
++                let target = self.parse_getline_target();
++                if self.cur.ty == TokType::Lt {
++                    self.advance();
++                    let save = self.suppress_gt;
++                    self.suppress_gt = false;
++                    let file = self.parse_base();
++                    self.suppress_gt = save;
++                    return Node::Getline(target.map(Box::new), Some(Box::new(file)), 1);
++                }
++                Node::Getline(target.map(Box::new), None, 0)
+             }
+-            return Node::Getline(target.map(Box::new), None, 0);
+-        }
+-        match self.cur.ty {
+             TokType::Num => {
+                 let n = Node::Num(self.cur.num);
+                 self.advance();
+-                return n;
++                n
+             }
+             TokType::Str => {
+                 let n = Node::Str(self.cur.text.clone());
+                 self.advance();
+-                return n;
++                n
+             }
+             TokType::Ere => {
+                 let n = Node::Ere(self.cur.text.clone());
+                 self.advance();
+-                return n;
++                n
+             }
+             TokType::Dollar => {
+                 self.advance();
+-                let idx = self.parse_unary_lvalue();
+-                return Node::Field(Box::new(idx));
++                Node::Field(Box::new(self.parse_dollar_operand()))
+             }
+             TokType::LParen => {
+                 self.advance();
+                 let save = self.suppress_gt;
+                 self.suppress_gt = false;
++                self.skip_newlines();
+                 let e = self.parse_expr();
++                self.skip_newlines();
+                 if self.cur.ty == TokType::Comma {
+                     let mut lst = vec![e];
+                     while self.cur.ty == TokType::Comma {
+                         self.advance();
+                         self.skip_newlines();
+                         lst.push(self.parse_expr());
++                        self.skip_newlines();
+                     }
+-                    self.expect(TokType::RParen, ")");
++                    self.expect(TokType::RParen);
+                     self.suppress_gt = save;
+-                    self.expect(TokType::In, "in");
+-                    if self.cur.ty != TokType::Ident {
+-                        eprintln!("mawk: expected array name after 'in'");
+-                        std::process::exit(2);
++                    if self.cur.ty != TokType::In {
++                        // `(a, b)` is only legal as `(a, b) in arr` or as a
++                        // print/printf argument list (handled in parse_print_args).
++                        self.syntax_error();
+                     }
+-                    let arrname = self.cur.text.clone();
+                     self.advance();
++                    let arrname = self.array_name_after_in();
+                     return Node::In(lst, arrname);
+                 }
+-                self.expect(TokType::RParen, ")");
++                self.expect(TokType::RParen);
+                 self.suppress_gt = save;
+-                return Node::Group(Box::new(e));
+-            }
+-            TokType::Not => {
+-                self.advance();
+-                return Node::Not(Box::new(self.parse_primary()));
+-            }
+-            TokType::Minus => {
+-                self.advance();
+-                return Node::Unary(TokType::Minus, Box::new(self.parse_primary()));
+-            }
+-            TokType::Plus => {
+-                self.advance();
+-                return Node::Unary(TokType::Plus, Box::new(self.parse_primary()));
+-            }
+-            TokType::Incr | TokType::Decr => {
+-                let op = self.cur.ty;
+-                self.advance();
+-                let target = self.parse_primary();
+-                return Node::PreIncDec(op, Box::new(target));
++                Node::Group(Box::new(e))
+             }
+             TokType::FuncName => {
+                 let name = self.cur.text.clone();
++                let line = self.cur.line;
+                 self.advance();
+-                self.expect(TokType::LParen, "(");
++                self.expect(TokType::LParen);
+                 let save = self.suppress_gt;
+                 self.suppress_gt = false;
+                 let args = self.parse_expr_list(TokType::RParen);
+                 self.suppress_gt = save;
+-                self.expect(TokType::RParen, ")");
+-                return Node::Call(name, args);
++                self.expect(TokType::RParen);
++                self.calls.push((name.clone(), args.len(), line));
++                Node::Call(name, args)
+             }
++            TokType::Builtin => self.parse_builtin_call(),
+             TokType::Ident => {
+                 let name = self.cur.text.clone();
+                 self.advance();
+-                let n = if self.cur.ty == TokType::LBracket {
++                if self.cur.ty == TokType::LBracket {
+                     self.advance();
+                     let save = self.suppress_gt;
+                     self.suppress_gt = false;
+                     let idxs = self.parse_expr_list(TokType::RBracket);
+                     self.suppress_gt = save;
+-                    self.expect(TokType::RBracket, "]");
++                    self.expect(TokType::RBracket);
+                     Node::ArrRef(name, idxs)
+                 } else {
+                     Node::Var(name)
+-                };
+-                if self.cur.ty == TokType::Incr || self.cur.ty == TokType::Decr {
+-                    let op = self.cur.ty;
+-                    self.advance();
+-                    return Node::PostIncDec(op, Box::new(n));
+                 }
+-                return n;
+             }
+-            _ => {
+-                eprintln!("mawk: parse error near token {:?}", self.cur.ty);
+-                std::process::exit(2);
++            _ => self.syntax_error(),
++        }
++    }
++
++    fn parse_builtin_call(&mut self) -> Node {
++        let name = self.cur.text.clone();
++        let line = self.cur.line;
++        self.advance();
++        let args = if self.cur.ty == TokType::LParen {
++            self.advance();
++            let save = self.suppress_gt;
++            self.suppress_gt = false;
++            let a = self.parse_expr_list(TokType::RParen);
++            self.suppress_gt = save;
++            self.expect(TokType::RParen);
++            a
++        } else if name == "length" {
++            Vec::new()
++        } else {
++            self.syntax_error();
++        };
++        let (lo, hi) = builtin_arity(&name).unwrap();
++        if args.len() < lo || args.len() > hi {
++            self.error_at(line, &format!("wrong number of arguments in call to {}", name));
++        }
++        if name == "split" && !matches!(args[1], Node::Var(_)) {
++            self.error_at(line, "split: second argument must be an array name");
++        }
++        Node::Call(name, args)
++    }
++
++    /// Operand of `$`: binds tighter than ++/-- so `$i++` is `($i)++`,
++    /// but allows `$++i`, `$-1`, `$$0`, `$NF`, `$(expr)`.
++    fn parse_dollar_operand(&mut self) -> Node {
++        match self.cur.ty {
++            TokType::Incr | TokType::Decr => {
++                let op = self.cur.ty;
++                self.advance();
++                let t = self.parse_base();
++                if !Self::is_lvalue(&t) {
++                    self.syntax_error();
++                }
++                Node::PreIncDec(op, Box::new(t))
++            }
++            TokType::Minus | TokType::Plus => {
++                let op = self.cur.ty;
++                self.advance();
++                Node::Unary(op, Box::new(self.parse_dollar_operand()))
++            }
++            TokType::Not => {
++                self.advance();
++                Node::Not(Box::new(self.parse_dollar_operand()))
++            }
++            _ => self.parse_base(),
++        }
++    }
++
++    fn parse_postfix(&mut self) -> Node {
++        if matches!(self.cur.ty, TokType::Incr | TokType::Decr) {
++            let op = self.cur.ty;
++            self.advance();
++            let t = self.parse_base();
++            if !Self::is_lvalue(&t) {
++                self.syntax_error();
+             }
++            return Node::PreIncDec(op, Box::new(t));
++        }
++        let n = self.parse_base();
++        if Self::is_lvalue(&n) && matches!(self.cur.ty, TokType::Incr | TokType::Decr) {
++            let op = self.cur.ty;
++            self.advance();
++            return Node::PostIncDec(op, Box::new(n));
+         }
++        n
+     }
+ 
+     fn parse_pow(&mut self) -> Node {
+-        let l = self.parse_primary();
++        let l = self.parse_postfix();
+         if self.cur.ty == TokType::Caret {
+             self.advance();
+-            let r = self.parse_pow();
++            // right-associative, and the exponent may carry a sign: 2^-1
++            let r = self.parse_unary();
+             return Node::Pow(Box::new(l), Box::new(r));
+         }
+         l
+     }
+ 
+-    fn parse_mul(&mut self) -> Node {
+-        let mut l = self.parse_pow();
+-        loop {
+-            match self.cur.ty {
+-                TokType::Star | TokType::Slash | TokType::Percent => {
+-                    let op = self.cur.ty;
+-                    self.advance();
+-                    let r = self.parse_pow();
+-                    l = Node::BinOp(op, Box::new(l), Box::new(r));
+-                }
+-                _ => break,
++    /// Unary ! + - bind looser than ^, so -2^2 == -4.
++    fn parse_unary(&mut self) -> Node {
++        match self.cur.ty {
++            TokType::Not => {
++                self.advance();
++                Node::Not(Box::new(self.parse_unary()))
++            }
++            TokType::Minus | TokType::Plus => {
++                let op = self.cur.ty;
++                self.advance();
++                Node::Unary(op, Box::new(self.parse_unary()))
+             }
++            _ => self.parse_pow(),
++        }
++    }
++
++    fn parse_mul(&mut self) -> Node {
++        let mut l = self.parse_unary();
++        while matches!(self.cur.ty, TokType::Star | TokType::Slash | TokType::Percent) {
++            let op = self.cur.ty;
++            self.advance();
++            let r = self.parse_unary();
++            l = Node::BinOp(op, Box::new(l), Box::new(r));
+         }
+         l
+     }
+ 
+     fn parse_add(&mut self) -> Node {
+         let mut l = self.parse_mul();
+-        loop {
+-            match self.cur.ty {
+-                TokType::Plus | TokType::Minus => {
+-                    let op = self.cur.ty;
+-                    self.advance();
+-                    let r = self.parse_mul();
+-                    l = Node::BinOp(op, Box::new(l), Box::new(r));
+-                }
+-                _ => break,
+-            }
++        while matches!(self.cur.ty, TokType::Plus | TokType::Minus) {
++            let op = self.cur.ty;
++            self.advance();
++            let r = self.parse_mul();
++            l = Node::BinOp(op, Box::new(l), Box::new(r));
+         }
+         l
+     }
+@@ -282,7 +383,7 @@ impl Parser {
+     fn starts_value(t: TokType) -> bool {
+         matches!(
+             t,
+-            TokType::Num | TokType::Str | TokType::Ere | TokType::Ident | TokType::FuncName
++            TokType::Num | TokType::Str | TokType::Ere | TokType::Ident | TokType::FuncName | TokType::Builtin
+                 | TokType::Dollar | TokType::LParen | TokType::Not | TokType::Minus | TokType::Plus
+                 | TokType::Incr | TokType::Decr
+         )
+@@ -290,25 +391,26 @@ impl Parser {
+ 
+     fn parse_concat(&mut self) -> Node {
+         let mut l = self.parse_add();
+-        while Self::starts_value(self.cur.ty) {
+-            let r = self.parse_add();
+-            l = Node::Concat(Box::new(l), Box::new(r));
+-        }
+-        while self.cur.ty == TokType::Pipe {
+-            let save = self.save();
+-            self.advance();
+-            if self.cur.ty == TokType::Getline {
++        loop {
++            if Self::starts_value(self.cur.ty) {
++                // `a (b, c) in arr` style backtracking isn't needed: a group
++                // with commas not followed by `in` is a syntax error anyway.
++                let r = self.parse_add();
++                l = Node::Concat(Box::new(l), Box::new(r));
++                continue;
++            }
++            if self.cur.ty == TokType::Pipe {
++                let save = self.save();
+                 self.advance();
+-                let target = if self.starts_getline_target() {
+-                    self.parse_lvalue_only()
+-                } else {
+-                    None
+-                };
+-                l = Node::Getline(target.map(Box::new), Some(Box::new(l)), 2);
+-            } else {
++                if self.cur.ty == TokType::Getline {
++                    self.advance();
++                    let target = self.parse_getline_target();
++                    l = Node::Getline(target.map(Box::new), Some(Box::new(l)), 2);
++                    continue;
++                }
+                 self.restore(save);
+-                break;
+             }
++            break;
+         }
+         l
+     }
+@@ -316,39 +418,43 @@ impl Parser {
+     fn parse_rel(&mut self) -> Node {
+         let l = self.parse_concat();
+         let t = self.cur.ty;
+-        if t == TokType::Lt
+-            || t == TokType::Le
+-            || t == TokType::Ge
+-            || t == TokType::Eq
+-            || t == TokType::Ne
++        if matches!(t, TokType::Lt | TokType::Le | TokType::Ge | TokType::Eq | TokType::Ne)
+             || (t == TokType::Gt && !self.suppress_gt)
+         {
+             self.advance();
+             let r = self.parse_concat();
+             return Node::BinOp(t, Box::new(l), Box::new(r));
+-        } else if t == TokType::Match || t == TokType::NoMatch {
+-            self.advance();
+-            let r = self.parse_concat();
+-            return Node::Match(t, Box::new(l), Box::new(r));
+-        } else if t == TokType::In {
++        }
++        l
++    }
++
++    fn parse_match(&mut self) -> Node {
++        let mut l = self.parse_rel();
++        while matches!(self.cur.ty, TokType::Match | TokType::NoMatch) {
++            let t = self.cur.ty;
+             self.advance();
+-            if self.cur.ty != TokType::Ident {
+-                eprintln!("mawk: expected array name after 'in'");
+-                std::process::exit(2);
+-            }
+-            let arrname = self.cur.text.clone();
++            let r = self.parse_rel();
++            l = Node::Match(t, Box::new(l), Box::new(r));
++        }
++        l
++    }
++
++    fn parse_in(&mut self) -> Node {
++        let mut l = self.parse_match();
++        while self.cur.ty == TokType::In {
+             self.advance();
+-            return Node::In(vec![l], arrname);
++            let arrname = self.array_name_after_in();
++            l = Node::In(vec![l], arrname);
+         }
+         l
+     }
+ 
+     fn parse_and(&mut self) -> Node {
+-        let mut l = self.parse_rel();
++        let mut l = self.parse_in();
+         while self.cur.ty == TokType::And {
+             self.advance();
+             self.skip_newlines();
+-            let r = self.parse_rel();
++            let r = self.parse_in();
+             l = Node::And(Box::new(l), Box::new(r));
+         }
+         l
+@@ -372,7 +478,7 @@ impl Parser {
+             self.skip_newlines();
+             let a = self.parse_ternary();
+             self.skip_newlines();
+-            self.expect(TokType::Colon, ":");
++            self.expect(TokType::Colon);
+             self.skip_newlines();
+             let b = self.parse_ternary();
+             return Node::Ternary(Box::new(c), Box::new(a), Box::new(b));
+@@ -393,7 +499,11 @@ impl Parser {
+                 | TokType::ModAssign
+                 | TokType::PowAssign
+         ) {
++            if !Self::is_lvalue(&l) {
++                self.syntax_error();
++            }
+             self.advance();
++            self.skip_newlines();
+             let r = self.parse_expr();
+             return Node::Assign(t, Box::new(l), Box::new(r));
+         }
+@@ -402,44 +512,37 @@ impl Parser {
+ 
+     // ---- statements ----
+ 
+-    fn parse_simple_or_null(&mut self) -> Option<Stmt> {
+-        if self.cur.ty == TokType::Semi || self.cur.ty == TokType::RParen {
+-            return None;
+-        }
+-        Some(self.parse_stmt())
++    fn at_print_end(&self) -> bool {
++        matches!(
++            self.cur.ty,
++            TokType::Semi | TokType::Newline | TokType::RBrace | TokType::Eof | TokType::Gt | TokType::Append | TokType::Pipe
++        )
+     }
+ 
+-    fn parse_block(&mut self) -> Stmt {
+-        self.expect(TokType::LBrace, "{");
+-        let mut v = Vec::new();
+-        self.skip_terms();
+-        while self.cur.ty != TokType::RBrace && self.cur.ty != TokType::Eof {
+-            let s = self.parse_stmt_opt();
+-            if let Some(s) = s {
+-                v.push(s);
++    fn parse_print_args(&mut self) -> Vec<Node> {
++        // `print (a, b) > "f"` / `printf("%d\n", x)`: a parenthesised list
++        // that makes up the whole argument list.
++        if self.cur.ty == TokType::LParen {
++            let snap = self.save();
++            let save_gt = self.suppress_gt;
++            self.advance();
++            self.suppress_gt = false;
++            let list = self.parse_expr_list(TokType::RParen);
++            self.suppress_gt = save_gt;
++            if self.cur.ty == TokType::RParen {
++                self.advance();
++                if self.at_print_end() && !list.is_empty() {
++                    return list;
++                }
+             }
+-            self.skip_terms();
++            self.restore(snap);
+         }
+-        self.expect(TokType::RBrace, "}");
+-        Stmt::Block(v)
+-    }
+-
+-    fn parse_print_args(&mut self) -> Vec<Node> {
+         let mut v = Vec::new();
+         let save = self.suppress_gt;
+         self.suppress_gt = true;
+-        if !matches!(
+-            self.cur.ty,
+-            TokType::Semi
+-                | TokType::Newline
+-                | TokType::RBrace
+-                | TokType::Eof
+-                | TokType::Gt
+-                | TokType::Append
+-                | TokType::Pipe
+-        ) {
++        if !self.at_print_end() {
+             loop {
+-                v.push(self.parse_ternary());
++                v.push(self.parse_expr());
+                 if self.cur.ty == TokType::Comma {
+                     self.advance();
+                     self.skip_newlines();
+@@ -452,12 +555,50 @@ impl Parser {
+         v
+     }
+ 
+-    fn parse_stmt_opt(&mut self) -> Option<Stmt> {
++    fn parse_block(&mut self) -> Stmt {
++        self.expect(TokType::LBrace);
++        let mut v = Vec::new();
++        self.skip_terms();
++        while self.cur.ty != TokType::RBrace && self.cur.ty != TokType::Eof {
++            v.push(self.parse_stmt());
++            self.skip_terms();
++        }
++        self.expect(TokType::RBrace);
++        Stmt::Block(v)
++    }
++
++    /// A simple statement must be followed by a terminator.
++    fn end_simple(&mut self) {
++        if !matches!(
++            self.cur.ty,
++            TokType::Semi | TokType::Newline | TokType::RBrace | TokType::Eof | TokType::Else
++        ) {
++            self.syntax_error();
++        }
+         if self.cur.ty == TokType::Semi {
+             self.advance();
+-            return None;
+         }
+-        Some(self.parse_stmt())
++    }
++
++    fn parse_loop_body(&mut self) -> Stmt {
++        self.skip_newlines();
++        self.loop_depth += 1;
++        let body = if self.cur.ty == TokType::Semi {
++            self.advance();
++            Stmt::Block(Vec::new())
++        } else {
++            self.parse_stmt()
++        };
++        self.loop_depth -= 1;
++        body
++    }
++
++    fn parse_opt_simple(&mut self, end: TokType) -> Option<Box<Stmt>> {
++        if self.cur.ty == end {
++            None
++        } else {
++            Some(Box::new(Stmt::Expr(self.parse_expr())))
++        }
+     }
+ 
+     fn parse_stmt(&mut self) -> Stmt {
+@@ -466,18 +607,28 @@ impl Parser {
+             TokType::LBrace => self.parse_block(),
+             TokType::If => {
+                 self.advance();
+-                self.expect(TokType::LParen, "(");
++                self.expect(TokType::LParen);
+                 let cond = self.parse_expr();
+-                self.expect(TokType::RParen, ")");
++                self.expect(TokType::RParen);
+                 self.skip_newlines();
+-                let then_s = self.parse_stmt();
++                let then_s = if self.cur.ty == TokType::Semi {
++                    self.advance();
++                    Stmt::Block(Vec::new())
++                } else {
++                    self.parse_stmt()
++                };
+                 let mut else_s = None;
+                 let save = self.save();
+                 self.skip_terms();
+                 if self.cur.ty == TokType::Else {
+                     self.advance();
+                     self.skip_newlines();
+-                    else_s = Some(Box::new(self.parse_stmt()));
++                    else_s = Some(Box::new(if self.cur.ty == TokType::Semi {
++                        self.advance();
++                        Stmt::Block(Vec::new())
++                    } else {
++                        self.parse_stmt()
++                    }));
+                 } else {
+                     self.restore(save);
+                 }
+@@ -485,91 +636,101 @@ impl Parser {
+             }
+             TokType::While => {
+                 self.advance();
+-                self.expect(TokType::LParen, "(");
++                self.expect(TokType::LParen);
+                 let cond = self.parse_expr();
+-                self.expect(TokType::RParen, ")");
+-                self.skip_newlines();
+-                let body = self.parse_stmt();
++                self.expect(TokType::RParen);
++                let body = self.parse_loop_body();
+                 Stmt::While(cond, Box::new(body))
+             }
+             TokType::Do => {
+                 self.advance();
+-                self.skip_newlines();
+-                let body = self.parse_stmt();
++                let body = self.parse_loop_body();
+                 self.skip_terms();
+-                self.expect(TokType::While, "while");
+-                self.expect(TokType::LParen, "(");
++                self.expect(TokType::While);
++                self.expect(TokType::LParen);
+                 let cond = self.parse_expr();
+-                self.expect(TokType::RParen, ")");
++                self.expect(TokType::RParen);
++                self.end_simple();
+                 Stmt::DoWhile(Box::new(body), cond)
+             }
+             TokType::For => {
+                 self.advance();
+-                self.expect(TokType::LParen, "(");
++                self.expect(TokType::LParen);
+                 if self.cur.ty == TokType::Ident {
+                     let save = self.save();
+                     let var = self.cur.text.clone();
+                     self.advance();
+                     if self.cur.ty == TokType::In {
+                         self.advance();
+-                        if self.cur.ty != TokType::Ident {
+-                            eprintln!("mawk: expected array name after 'in'");
+-                            std::process::exit(2);
++                        let arrname = self.array_name_after_in();
++                        if self.cur.ty == TokType::RParen {
++                            self.advance();
++                            let body = self.parse_loop_body();
++                            return Stmt::ForIn(var, arrname, Box::new(body));
+                         }
+-                        let arrname = self.cur.text.clone();
+-                        self.advance();
+-                        self.expect(TokType::RParen, ")");
+-                        self.skip_newlines();
+-                        let body = self.parse_stmt();
+-                        return Stmt::ForIn(var, arrname, Box::new(body));
+                     }
+                     self.restore(save);
+                 }
+-                let init = self.parse_simple_or_null();
+-                self.expect(TokType::Semi, ";");
++                let init = self.parse_opt_simple(TokType::Semi);
++                self.expect(TokType::Semi);
++                self.skip_newlines();
+                 let cond = if self.cur.ty == TokType::Semi { None } else { Some(self.parse_expr()) };
+-                self.expect(TokType::Semi, ";");
+-                let incr = self.parse_simple_or_null();
+-                self.expect(TokType::RParen, ")");
++                self.expect(TokType::Semi);
+                 self.skip_newlines();
+-                let body = self.parse_stmt();
+-                Stmt::For(init.map(Box::new), cond, incr.map(Box::new), Box::new(body))
++                let incr = self.parse_opt_simple(TokType::RParen);
++                self.expect(TokType::RParen);
++                let body = self.parse_loop_body();
++                Stmt::For(init, cond, incr, Box::new(body))
+             }
+-            TokType::Print => {
+-                self.advance();
+-                let args = self.parse_print_args();
+-                let (mode, target) = self.parse_redir();
+-                Stmt::Print(args, mode, target)
+-            }
+-            TokType::Printf => {
++            TokType::Print | TokType::Printf => {
++                let is_printf = self.cur.ty == TokType::Printf;
++                let line = self.cur.line;
+                 self.advance();
+                 let args = self.parse_print_args();
++                if is_printf && args.is_empty() {
++                    self.error_at(line, "printf: no format");
++                }
+                 let (mode, target) = self.parse_redir();
+-                Stmt::Printf(args, mode, target)
+-            }
+-            TokType::Next => {
+-                self.advance();
+-                Stmt::Next
+-            }
+-            TokType::NextFile => {
+-                self.advance();
+-                Stmt::NextFile
++                self.end_simple();
++                if is_printf {
++                    Stmt::Printf(args, mode, target)
++                } else {
++                    Stmt::Print(args, mode, target)
++                }
+             }
+-            TokType::Break => {
++            TokType::Next | TokType::NextFile => {
++                let is_next = self.cur.ty == TokType::Next;
++                if self.in_begin_end {
++                    self.error(if is_next { "improper use of next" } else { "improper use of nextfile" });
++                }
+                 self.advance();
+-                Stmt::Break
++                self.end_simple();
++                if is_next { Stmt::Next } else { Stmt::NextFile }
+             }
+-            TokType::Continue => {
++            TokType::Break | TokType::Continue => {
++                let is_break = self.cur.ty == TokType::Break;
++                if self.loop_depth == 0 {
++                    self.error(if is_break {
++                        "break statement outside of loop"
++                    } else {
++                        "continue statement outside of loop"
++                    });
++                }
+                 self.advance();
+-                Stmt::Continue
++                self.end_simple();
++                if is_break { Stmt::Break } else { Stmt::Continue }
+             }
+             TokType::Return => {
++                if !self.in_function {
++                    self.error("return outside function body");
++                }
+                 self.advance();
+                 let e = if !matches!(self.cur.ty, TokType::Semi | TokType::Newline | TokType::RBrace | TokType::Eof) {
+                     Some(self.parse_expr())
+                 } else {
+                     None
+                 };
++                self.end_simple();
+                 Stmt::Return(e)
+             }
+             TokType::Exit => {
+@@ -579,13 +740,13 @@ impl Parser {
+                 } else {
+                     None
+                 };
++                self.end_simple();
+                 Stmt::Exit(e)
+             }
+             TokType::Delete => {
+                 self.advance();
+                 if self.cur.ty != TokType::Ident {
+-                    eprintln!("mawk: expected array name after delete");
+-                    std::process::exit(2);
++                    self.error("expected array name after delete");
+                 }
+                 let name = self.cur.text.clone();
+                 self.advance();
+@@ -593,8 +754,9 @@ impl Parser {
+                 if self.cur.ty == TokType::LBracket {
+                     self.advance();
+                     idxs = self.parse_expr_list(TokType::RBracket);
+-                    self.expect(TokType::RBracket, "]");
++                    self.expect(TokType::RBracket);
+                 }
++                self.end_simple();
+                 Stmt::Delete(name, idxs)
+             }
+             TokType::Semi => {
+@@ -603,41 +765,52 @@ impl Parser {
+             }
+             _ => {
+                 let e = self.parse_expr();
++                self.end_simple();
+                 Stmt::Expr(e)
+             }
+         }
+     }
+ 
+     fn parse_redir(&mut self) -> (RedirMode, Option<Node>) {
+-        if self.cur.ty == TokType::Gt {
+-            self.advance();
+-            (RedirMode::Trunc, Some(self.parse_concat()))
+-        } else if self.cur.ty == TokType::Append {
+-            self.advance();
+-            (RedirMode::Append, Some(self.parse_concat()))
+-        } else if self.cur.ty == TokType::Pipe {
+-            self.advance();
+-            (RedirMode::Pipe, Some(self.parse_concat()))
+-        } else {
+-            (RedirMode::None, None)
+-        }
++        let mode = match self.cur.ty {
++            TokType::Gt => RedirMode::Trunc,
++            TokType::Append => RedirMode::Append,
++            TokType::Pipe => RedirMode::Pipe,
++            _ => return (RedirMode::None, None),
++        };
++        self.advance();
++        (mode, Some(self.parse_concat()))
+     }
+ 
+     fn parse_function_def(&mut self) {
++        let line = self.cur.line;
+         self.advance();
+-        let fname = if self.cur.ty == TokType::FuncName || self.cur.ty == TokType::Ident {
+-            let n = self.cur.text.clone();
+-            self.advance();
+-            n
+-        } else {
+-            eprintln!("mawk: expected function name");
+-            std::process::exit(2);
++        let fname = match self.cur.ty {
++            TokType::FuncName | TokType::Ident => {
++                let n = self.cur.text.clone();
++                self.advance();
++                n
++            }
++            TokType::Builtin => self.error(&format!("cannot redefine builtin function {}", self.cur.text)),
++            _ => self.error("expected function name"),
+         };
+-        self.expect(TokType::LParen, "(");
+-        let mut params = Vec::new();
++        if self.funcs.contains_key(&fname) {
++            self.error_at(line, &format!("function {} redefined", fname));
++        }
++        self.expect(TokType::LParen);
++        let mut params: Vec<String> = Vec::new();
++        self.skip_newlines();
+         while self.cur.ty == TokType::Ident {
+-            params.push(self.cur.text.clone());
++            let p = self.cur.text.clone();
++            if p == fname {
++                self.error(&format!("function {}: parameter shadows function name", fname));
++            }
++            if params.contains(&p) {
++                self.error(&format!("function {}: duplicate parameter {}", fname, p));
++            }
++            params.push(p);
+             self.advance();
++            self.skip_newlines();
+             if self.cur.ty == TokType::Comma {
+                 self.advance();
+                 self.skip_newlines();
+@@ -645,12 +818,18 @@ impl Parser {
+             }
+             break;
+         }
+-        self.expect(TokType::RParen, ")");
++        self.expect(TokType::RParen);
+         self.skip_newlines();
++        self.in_function = true;
+         let body = self.parse_block();
++        self.in_function = false;
+         self.funcs.insert(fname.clone(), FuncDef { name: fname, params, body });
+     }
+ 
++    fn new_rule(ptype: PType, action: Option<Stmt>) -> Rule {
++        Rule { ptype, action, range_active: std::cell::Cell::new(false) }
++    }
++
+     pub fn parse_program(mut self) -> Program {
+         self.skip_terms();
+         while self.cur.ty != TokType::Eof {
+@@ -659,57 +838,71 @@ impl Parser {
+                 self.skip_terms();
+                 continue;
+             }
+-            let rule = if self.cur.ty == TokType::Begin {
+-                self.advance();
+-                self.skip_newlines();
+-                Rule { ptype: PType::Begin, action: Some(self.parse_block()), range_active: std::cell::Cell::new(false) }
+-            } else if self.cur.ty == TokType::End {
+-                self.advance();
+-                self.skip_newlines();
+-                Rule { ptype: PType::End, action: Some(self.parse_block()), range_active: std::cell::Cell::new(false) }
+-            } else if self.cur.ty == TokType::LBrace {
+-                Rule { ptype: PType::Always, action: Some(self.parse_block()), range_active: std::cell::Cell::new(false) }
+-            } else if self.cur.ty == TokType::Ere {
+-                let pere1 = self.cur.text.clone();
+-                self.advance();
+-                if self.cur.ty == TokType::Comma {
++            let rule = match self.cur.ty {
++                TokType::Begin | TokType::End => {
++                    let is_begin = self.cur.ty == TokType::Begin;
+                     self.advance();
+                     self.skip_newlines();
+-                    let e1 = Node::Ere(pere1);
+-                    let e2 = if self.cur.ty == TokType::Ere {
+-                        let t = self.cur.text.clone();
++                    self.in_begin_end = true;
++                    let action = self.parse_block();
++                    self.in_begin_end = false;
++                    Self::new_rule(if is_begin { PType::Begin } else { PType::End }, Some(action))
++                }
++                TokType::LBrace => {
++                    let action = self.parse_block();
++                    Self::new_rule(PType::Always, Some(action))
++                }
++                _ => {
++                    // The action's '{' must be on the same line as the pattern;
++                    // `pattern\n{...}` is two separate rules.
++                    let e = self.parse_expr();
++                    let ptype = if self.cur.ty == TokType::Comma {
+                         self.advance();
+-                        Node::Ere(t)
++                        self.skip_newlines();
++                        let e2 = self.parse_expr();
++                        PType::Range(e, e2)
+                     } else {
+-                        self.parse_expr()
++                        PType::Expr(e)
+                     };
+-                    self.skip_newlines();
+-                    let action = if self.cur.ty == TokType::LBrace { Some(self.parse_block()) } else { None };
+-                    Rule { ptype: PType::Range(e1, e2), action, range_active: std::cell::Cell::new(false) }
+-                } else {
+-                    self.skip_newlines();
+-                    let action = if self.cur.ty == TokType::LBrace { Some(self.parse_block()) } else { None };
+-                    Rule { ptype: PType::Ere(pere1), action, range_active: std::cell::Cell::new(false) }
+-                }
+-            } else {
+-                let e = self.parse_expr();
+-                self.skip_newlines();
+-                if self.cur.ty == TokType::Comma {
+-                    self.advance();
+-                    self.skip_newlines();
+-                    let e2 = self.parse_expr();
+-                    self.skip_newlines();
+-                    let action = if self.cur.ty == TokType::LBrace { Some(self.parse_block()) } else { None };
+-                    Rule { ptype: PType::Range(e, e2), action, range_active: std::cell::Cell::new(false) }
+-                } else {
+-                    self.skip_newlines();
+                     let action = if self.cur.ty == TokType::LBrace { Some(self.parse_block()) } else { None };
+-                    Rule { ptype: PType::Expr(e), action, range_active: std::cell::Cell::new(false) }
++                    if action.is_none()
++                        && !matches!(self.cur.ty, TokType::Newline | TokType::Semi | TokType::Eof)
++                    {
++                        self.syntax_error();
++                    }
++                    Self::new_rule(ptype, action)
+                 }
+             };
+             self.rules.push(rule);
+             self.skip_terms();
+         }
++        for (name, nargs, line) in &self.calls {
++            match self.funcs.get(name) {
++                None => self.error_at(*line, &format!("function {} never defined", name)),
++                Some(f) if *nargs > f.params.len() => {
++                    self.error_at(*line, &format!("too many arguments in call to {}", name))
++                }
++                _ => {}
++            }
++        }
+         Program { rules: self.rules, funcs: self.funcs }
+     }
+ }
++
++fn tok_text(t: TokType) -> &'static str {
++    use TokType::*;
++    match t {
++        Begin => "BEGIN", End => "END", If => "if", Else => "else", While => "while", Do => "do",
++        For => "for", Print => "print", Printf => "printf", Next => "next", NextFile => "nextfile",
++        Exit => "exit", Break => "break", Continue => "continue", Delete => "delete", In => "in",
++        Function => "function", Getline => "getline", Return => "return",
++        LBrace => "{", RBrace => "}", LParen => "(", RParen => ")", LBracket => "[", RBracket => "]",
++        Semi => ";", Comma => ",", Dollar => "$", Assign => "=", AddAssign => "+=", SubAssign => "-=",
++        MulAssign => "*=", DivAssign => "/=", ModAssign => "%=", PowAssign => "^=", Or => "||",
++        And => "&&", Not => "!", Lt => "<", Le => "<=", Gt => ">", Ge => ">=", Eq => "==", Ne => "!=",
++        Match => "~", NoMatch => "!~", Plus => "+", Minus => "-", Star => "*", Slash => "/",
++        Percent => "%", Caret => "^", Incr => "++", Decr => "--", Question => "?", Colon => ":",
++        Pipe => "|", Append => ">>",
++        _ => "?",
++    }
++}
+diff --git a/src/regex_engine.rs b/src/regex_engine.rs
+index 9759db4..5c7735e 100644
+--- a/src/regex_engine.rs
++++ b/src/regex_engine.rs
+@@ -183,7 +183,10 @@ pub fn regex_compile(pat: &str) -> Rc<Regex> {
+ enum Cont<'a> {
+     Done,
+     Seq { atoms: &'a [RAtom], idx: usize, parent: &'a Cont<'a> },
+-    Repeat { atom: &'a RAtom, repcount: i32, parent: &'a Cont<'a> },
++    // iter_start: text position where the current iteration began; an
++    // iteration that consumed nothing may not be repeated (stops `(a*)*`
++    // from recursing forever).
++    Repeat { atom: &'a RAtom, repcount: i32, iter_start: usize, parent: &'a Cont<'a> },
+ }
+ 
+ fn atom_char_matches(a: &RAtom, c: u8) -> bool {
+@@ -206,8 +209,8 @@ fn matchatoms(f: &Cont, text: &[u8], pos: usize, start: usize, anchor_end: bool)
+             }
+             Some(pos - start)
+         }
+-        Cont::Repeat { atom, repcount, parent } => {
+-            try_repeat(atom, *repcount, parent, text, pos, start, anchor_end)
++        Cont::Repeat { atom, repcount, iter_start, parent } => {
++            try_repeat(atom, *repcount, pos != *iter_start, parent, text, pos, start, anchor_end)
+         }
+         Cont::Seq { atoms, idx, parent } => {
+             if *idx == atoms.len() {
+@@ -223,6 +226,7 @@ fn matchatoms(f: &Cont, text: &[u8], pos: usize, start: usize, anchor_end: bool)
+ fn try_repeat(
+     a: &RAtom,
+     repcount: i32,
++    allow_more: bool,
+     cont: &Cont,
+     text: &[u8],
+     pos: usize,
+@@ -231,17 +235,17 @@ fn try_repeat(
+ ) -> Option<usize> {
+     let maxrep: i32 = if a.quant == 3 { 1 } else { -1 };
+     let minrep_total: i32 = if a.quant == 2 { 1 } else { 0 };
+-    if maxrep == -1 || repcount < maxrep {
++    if allow_more && (maxrep == -1 || repcount < maxrep) {
+         if let AtomKind::Group(g) = &a.kind {
+             for concat in &g.concats {
+-                let repf = Cont::Repeat { atom: a, repcount: repcount + 1, parent: cont };
++                let repf = Cont::Repeat { atom: a, repcount: repcount + 1, iter_start: pos, parent: cont };
+                 let bf = Cont::Seq { atoms: &concat.atoms, idx: 0, parent: &repf };
+                 if let Some(r) = matchatoms(&bf, text, pos, start, anchor_end) {
+                     return Some(r);
+                 }
+             }
+         } else if pos < text.len() && atom_char_matches(a, text[pos]) {
+-            let repf = Cont::Repeat { atom: a, repcount: repcount + 1, parent: cont };
++            let repf = Cont::Repeat { atom: a, repcount: repcount + 1, iter_start: pos, parent: cont };
+             if let Some(r) = matchatoms(&repf, text, pos + 1, start, anchor_end) {
+                 return Some(r);
+             }
+@@ -276,7 +280,7 @@ fn match_one_atom(
+         }
+         return None;
+     }
+-    try_repeat(a, 0, cont, text, pos, start, anchor_end)
++    try_repeat(a, 0, true, cont, text, pos, start, anchor_end)
+ }
+ 
+ fn regex_match_at(re: &Regex, text: &[u8], pos: usize) -> Option<usize> {
+@@ -291,9 +295,18 @@ fn regex_match_at(re: &Regex, text: &[u8], pos: usize) -> Option<usize> {
+ 
+ /// Returns Some((mstart, mlen)) byte offsets on success.
+ pub fn regex_search(pat: &str, text: &str) -> Option<(usize, usize)> {
++    regex_search_at(pat, text.as_bytes(), 0)
++}
++
++/// Searches `text` starting at byte offset `from`, treating `text` as the
++/// whole subject: `^` only matches at offset 0 and `$` only at the very end.
++/// Used by gsub/split/RS so that later matches don't see a fake start of line.
++pub fn regex_search_at(pat: &str, bytes: &[u8], from: usize) -> Option<(usize, usize)> {
+     let re = regex_compile(pat);
+-    let bytes = text.as_bytes();
+-    let mut pos = 0usize;
++    if from > bytes.len() || (re.anchor_start && from > 0) {
++        return None;
++    }
++    let mut pos = from;
+     loop {
+         if let Some(len) = regex_match_at(&re, bytes, pos) {
+             return Some((pos, len));
+diff --git a/src/value.rs b/src/value.rs
+index 0b9e21a..1067b4e 100644
+--- a/src/value.rs
++++ b/src/value.rs
+@@ -1,7 +1,11 @@
+ // ----------------------------------------------------------------------
+-// Values: an AWK scalar is either a pure number, a pure string, or a
+-// "strnum" (a string that came from input/ARGV/ENVIRON/etc and should be
+-// compared numerically when it looks like a number).
++// Values: an AWK scalar is one of
++//   * a pure number,
++//   * a pure string,
++//   * a "strnum" (a string that came from input/ARGV/ENVIRON/-v etc and is
++//     compared numerically when it looks like a number), or
++//   * uninitialized, which acts as both 0 and "" (so `x == 0` and `x == ""`
++//     are both true for a never-assigned variable).
+ // ----------------------------------------------------------------------
+ 
+ #[derive(Clone, Debug)]
+@@ -9,6 +13,7 @@ pub struct Value {
+     pub num: f64,
+     pub str: Option<String>,
+     pub is_strnum: bool,
++    pub uninit: bool,
+ }
+ 
+ pub fn looks_numeric(s: &str) -> bool {
+@@ -22,17 +27,22 @@ pub fn looks_numeric(s: &str) -> bool {
+     }
+ }
+ 
++fn starts_with_ci(s: &[u8], word: &str) -> bool {
++    s.len() >= word.len() && s[..word.len()].eq_ignore_ascii_case(word.as_bytes())
++}
++
+ /// Parses a leading double the way C's strtod does (optional sign, digits,
+ /// optional decimal point, optional exponent; also accepts "inf"/"nan").
+ /// Returns (value, remaining_str).
+ pub fn parse_leading_double(s: &str) -> Option<(f64, &str)> {
+     let bytes = s.as_bytes();
+-    let mut i = 0usize;
+     let n = bytes.len();
++    let mut i = 0usize;
++    let negative = i < n && bytes[i] == b'-';
+     if i < n && (bytes[i] == b'+' || bytes[i] == b'-') {
+         i += 1;
+     }
+-    let start_digits = i;
++    let sign_len = i;
+     let mut saw_digit = false;
+     while i < n && bytes[i].is_ascii_digit() {
+         i += 1;
+@@ -46,26 +56,16 @@ pub fn parse_leading_double(s: &str) -> Option<(f64, &str)> {
+         }
+     }
+     if !saw_digit {
+-        // check for inf/nan
+-        let rest = &s[start_digits.min(s.len())..];
+-        let lower_start = if start_digits > 0 { start_digits - (i - start_digits) } else { 0 };
+-        let _ = lower_start;
+-        let candidate = &s[(i.saturating_sub(0))..];
+-        let _ = candidate;
+-        // try inf/infinity/nan (case-insensitive), allow leading sign already consumed
+-        let sign_len = if !bytes.is_empty() && (bytes[0] == b'+' || bytes[0] == b'-') { 1 } else { 0 };
+-        let word = &s[sign_len..];
+-        let lw = word.to_ascii_lowercase();
+-        if lw.starts_with("infinity") {
+-            let val: f64 = if sign_len == 1 && bytes[0] == b'-' { f64::NEG_INFINITY } else { f64::INFINITY };
+-            return Some((val, &s[sign_len + 8..]));
+-        } else if lw.starts_with("inf") {
+-            let val: f64 = if sign_len == 1 && bytes[0] == b'-' { f64::NEG_INFINITY } else { f64::INFINITY };
+-            return Some((val, &s[sign_len + 3..]));
+-        } else if lw.starts_with("nan") {
++        // inf / infinity / nan, case-insensitive, after an optional sign
++        let word = &bytes[sign_len..];
++        let inf = if negative { f64::NEG_INFINITY } else { f64::INFINITY };
++        if starts_with_ci(word, "infinity") {
++            return Some((inf, &s[sign_len + 8..]));
++        } else if starts_with_ci(word, "inf") {
++            return Some((inf, &s[sign_len + 3..]));
++        } else if starts_with_ci(word, "nan") {
+             return Some((f64::NAN, &s[sign_len + 3..]));
+         }
+-        let _ = rest;
+         return None;
+     }
+     let mut j = i;
+@@ -82,27 +82,30 @@ pub fn parse_leading_double(s: &str) -> Option<(f64, &str)> {
+             j = k;
+         }
+     }
+-    let numstr = &s[0..j];
+-    match numstr.parse::<f64>() {
++    match s[0..j].parse::<f64>() {
+         Ok(v) => Some((v, &s[j..])),
+         Err(_) => None,
+     }
+ }
+ 
+ pub fn mknum(d: f64) -> Value {
+-    Value { num: d, str: None, is_strnum: false }
++    Value { num: d, str: None, is_strnum: false, uninit: false }
+ }
+ pub fn mkstr(s: &str) -> Value {
+-    Value { num: 0.0, str: Some(s.to_string()), is_strnum: false }
++    Value { num: 0.0, str: Some(s.to_string()), is_strnum: false, uninit: false }
+ }
+ pub fn mkstring(s: String) -> Value {
+-    Value { num: 0.0, str: Some(s), is_strnum: false }
++    Value { num: 0.0, str: Some(s), is_strnum: false, uninit: false }
+ }
+ pub fn mkstrnum(s: &str) -> Value {
+-    Value { num: 0.0, str: Some(s.to_string()), is_strnum: true }
++    Value { num: 0.0, str: Some(s.to_string()), is_strnum: true, uninit: false }
+ }
+ pub fn mkstrnum_owned(s: String) -> Value {
+-    Value { num: 0.0, str: Some(s), is_strnum: true }
++    Value { num: 0.0, str: Some(s), is_strnum: true, uninit: false }
++}
++/// The value of a variable or array element that has never been assigned.
++pub fn mkuninit() -> Value {
++    Value { num: 0.0, str: Some(String::new()), is_strnum: false, uninit: true }
+ }
+ 
+ pub fn to_num(v: &Value) -> f64 {
+@@ -130,7 +133,11 @@ pub fn to_str(v: &Value, fmt: &str) -> String {
+     }
+ }
+ 
++/// True when the value takes part in a numeric (rather than string) comparison.
+ pub fn is_numericish(v: &Value) -> bool {
++    if v.uninit {
++        return true;
++    }
+     match &v.str {
+         None => true,
+         Some(s) => v.is_strnum && looks_numeric(s),
+@@ -138,6 +145,9 @@ pub fn is_numericish(v: &Value) -> bool {
+ }
+ 
+ pub fn truthy(v: &Value) -> bool {
++    if v.uninit {
++        return false;
++    }
+     match &v.str {
+         None => v.num != 0.0,
+         Some(s) => {

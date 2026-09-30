@@ -65,7 +65,6 @@ pub enum PType {
     End,
     Always,
     Expr(Node),
-    Ere(String),
     Range(Node, Node),
 }
 
@@ -76,6 +75,7 @@ pub struct Rule {
 }
 
 pub struct FuncDef {
+    #[allow(dead_code)] // kept for diagnostics / debugging
     pub name: String,
     pub params: Vec<String>,
     pub body: Stmt,
