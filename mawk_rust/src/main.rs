@@ -5,12 +5,12 @@
 // program: same language coverage (BEGIN/END, patterns, full expression
 // grammar, user functions, a hand-rolled backtracking regex engine, printf,
 // getline in all its forms, I/O redirection, etc).
-// Version: 1.0.0
+// Version: 1.0.1
 // Release  date: 9/27/2026
 // ============================================================================
 
 /// Reported by `--version` / `-W version`; keep in sync with the header above.
-pub const VERSION: &str = "1.0.0";
+pub const VERSION: &str = "1.0.1";
 pub const RELEASE_DATE: &str = "9/27/2026";
 
 mod regex_engine;
