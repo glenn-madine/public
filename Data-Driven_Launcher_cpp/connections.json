@@ -110,7 +110,7 @@
         "description": "This PC"
     },
     {
-        "host": "::{26EE0668-A00A-44D7-9371-BEB064C98683}",
+        "host": "::{21EC2020-3AEA-1069-A2DD-08002B30309D}",
         "type": "SHELL",
         "description": "Control Panel"
     },
@@ -123,5 +123,11 @@
         "host": "\"C:\\Program Files (x86)\\SomeFolder\\SomeBatch.bat\"",
         "type": "CMD",
         "description": "Run SomeBatch.bat"
-    }
+    },
+    {
+		"host": "www.microsoft.com",
+		"type": "InPrivate",
+		"description": "launch site in private mode"
+	}
+
 ]

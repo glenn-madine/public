@@ -1,7 +1,30 @@
-// Data-Driven Launcher+ version 2.3.0
+// Data-Driven Launcher+ version 2.3.1
 // C++ (Win32 API)
 // Author: Glenn Madine
-// Release_Date: 09/26/2026
+// Release_Date: 11/06/2026
+// Changes in 2.3.1:
+//   - R13: DDLaunch.rc version resource updated to 2.3.1 (it still said
+//         2.1.2). resource.h now names DDLaunch.rc and drops the unused
+//         IDI_ICON2 / IDI_ICON3 left over from RDP_Plus.
+//   - B15: COM is initialized once (single-threaded apartment) on the UI
+//         thread in wWinMain, as ShellExecuteEx requires for shell extensions
+//         and some URL handlers. ShowRunDialog no longer initializes COM itself.
+//   - B16: Column sorting compares with CompareStringOrdinal (ignoring case),
+//         the same rule used for action names, instead of the locale-dependent
+//         _wcsicmp.
+//   - B17: Config files are opened with FILE_SHARE_READ | FILE_SHARE_WRITE |
+//         FILE_SHARE_DELETE, so a reload succeeds even while an editor still
+//         has the file open.
+//   - B18: URL actions: a host that is already a full URL (e.g.
+//         "https://server/page" for type HTTPS) is opened as-is instead of
+//         becoming "https://https://...". Characters that are never valid in
+//         a URL (spaces, control characters, " < > ^ ` { | }) are
+//         percent-encoded. "host:port" still works as before.
+//   - B19: The first data load runs after the window is shown, so any JSON
+//         error box at startup has a visible owner window.
+//   - R14: Stale "upper-cased" comment on DEFAULT_ACTIONS_JSON corrected;
+//         user32.lib / gdi32.lib added to the #pragma comment(lib) list so
+//         it matches the link line.
 // Changes in 2.3.0:
 //   - B11: A host containing spaces, tabs or quotes is quoted (Windows
 //         command-line rules) before it is appended to "args", so it reaches
@@ -122,6 +145,8 @@
 #include <cstdint>    // uintptr_t (R2)
 #include "json.hpp"   // nlohmann/json single-header
 #include "resource.h"
+#pragma comment(lib, "user32.lib")
+#pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "shlwapi.lib")
@@ -137,7 +162,7 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         		L"v2.3.0"
+#define VERSION         		L"v2.3.1"
 #define IDC_LISTVIEW        	1001
 #define IDC_BTN_RDP         	1002
 #define IDC_BTN_EXIT        	1003
@@ -224,7 +249,11 @@ void from_json(const json& j, Action& a) {
 // so the path itself can be a std::wstring without depending on the
 // MSVC-only std::ifstream(wchar_t*) extension.
 std::string ReadFileUtf8(const std::wstring& filePath) {
-    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+    // B17: share write/delete too, so the read succeeds while an editor still
+    // has the file open (or is replacing it). A file caught mid-save just
+    // fails to parse once; its stamp changes again when the save completes.
+    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) {
         throw std::runtime_error("Could not open file: " + WideToUtf8(filePath));
@@ -419,7 +448,7 @@ static std::wstring GetActionsJsonPath() {
 //
 // actionDefinitions.json: must be a top-level JSON array (see loadActions()).
 // Seeded with a few common actions so a fresh install works out of the box.
-// "action" is matched against the connection's "type" upper-cased.
+// "action" is matched against the connection's "type" ignoring case (B5).
 //
 // connections.json: either a JSON array of device objects, or an object of
 // named groups. Seeded with an empty array -- valid either way.
@@ -679,6 +708,56 @@ static std::wstring QuoteArgIfNeeded(const std::wstring& arg) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// URL building for URL actions (B18)
+// ---------------------------------------------------------------------------
+
+// The scheme of `text` (the part before ':'), or L"" if it has none.
+static std::wstring UrlScheme(const std::wstring& text) {
+    return StartsWithUrlScheme(text) ? text.substr(0, text.find(L':')) : std::wstring();
+}
+
+// True if `host` is already a complete URL rather than something to append to
+// the action's prefix. It is if it has a scheme AND either the scheme is
+// followed by "//" ("http://pi01", "ssh://x") or it is the action's own scheme
+// ("mailto:a@b" for a "mailto:" action). This keeps "dc01:8443" (host:port,
+// which looks like scheme "dc01") being appended as before.
+static bool HostIsFullUrl(const std::wstring& host, const std::wstring& command) {
+    const std::wstring scheme = UrlScheme(host);
+    if (scheme.empty()) {
+        return false;
+    }
+    if (host.compare(scheme.size(), 3, L"://") == 0) {
+        return true;
+    }
+    const std::wstring cmdScheme = UrlScheme(command);
+    return !cmdScheme.empty() &&
+           CompareStringOrdinal(scheme.c_str(), static_cast<int>(scheme.size()),
+                                cmdScheme.c_str(), static_cast<int>(cmdScheme.size()),
+                                TRUE) == CSTR_EQUAL;
+}
+
+// Percent-encode the characters that are never valid anywhere in a URL
+// (RFC 3986): spaces and other control characters, and " < > ^ ` { | }.
+// Everything else -- including '/', '?', '#', ':', '%', '\' (file:/// paths)
+// and non-ASCII (internationalized names, handled by the browser) -- is left
+// alone so hosts, ports, paths, queries and fragments keep their meaning.
+static std::wstring EncodeUrlUnsafeChars(const std::wstring& text) {
+    static const wchar_t kHex[] = L"0123456789ABCDEF";
+    std::wstring out;
+    out.reserve(text.size());
+    for (wchar_t c : text) {
+        if (c <= 0x20 || c == 0x7F || wcschr(L"\"<>^`{|}", c) != nullptr) {
+            out += L'%';
+            out += kHex[(c >> 4) & 0xF];
+            out += kHex[c & 0xF];
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
 // command is either an executable (run with args + host as parameters) or
 // a URL prefix (command + host is opened with its registered handler).
 // Returns ERROR_SUCCESS or a Win32 error code; `file`/`params` receive what
@@ -686,7 +765,9 @@ static std::wstring QuoteArgIfNeeded(const std::wstring& arg) {
 static DWORD LaunchSomething(HWND hOwner, const std::wstring& command, const std::wstring& args,
                              const std::wstring& host, std::wstring& file, std::wstring& params) {
     if (StartsWithUrlScheme(command)) {
-        file = command + host;
+        // B18: a full URL in "host" is used as-is, otherwise it is appended
+        // to the prefix; either way unsafe characters are encoded.
+        file = EncodeUrlUnsafeChars(HostIsFullUrl(host, command) ? host : command + host);
         params.clear();
     } else {
         file   = command;
@@ -701,11 +782,9 @@ static DWORD LaunchSomething(HWND hOwner, const std::wstring& command, const std
 // Uses the documented Shell.Application automation object
 // (IShellDispatch::FileRun) rather than the undocumented shell32 ordinal 61
 // (RunFileDlg). __uuidof() is used so no extra GUID library is needed.
+// COM is already initialized for the UI thread by wWinMain (B15).
 // ---------------------------------------------------------------------------
 static void ShowRunDialog(HWND hWnd) {
-    // COM may already be initialized on this thread; only balance our own init.
-    HRESULT hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-
     IShellDispatch* pShell = nullptr;
     HRESULT hr = CoCreateInstance(__uuidof(Shell), nullptr, CLSCTX_INPROC_SERVER,
                                   __uuidof(IShellDispatch), reinterpret_cast<void**>(&pShell));
@@ -718,10 +797,6 @@ static void ShowRunDialog(HWND hWnd) {
         wchar_t msg[128];
         swprintf_s(msg, L"Could not open the Run dialog (HRESULT 0x%08X).", static_cast<unsigned>(hr));
         MessageBoxW(hWnd, msg, L"DDLaunch+", MB_ICONERROR | MB_OK);
-    }
-
-    if (SUCCEEDED(hrInit)) {
-        CoUninitialize();
     }
 }
 
@@ -921,7 +996,12 @@ static void ApplyCurrentSort() {
             case COL_DESCRIPTION: pa = &a.description; pb = &b.description; break;
             default:              return false;
             }
-            int cmp = _wcsicmp(pa->c_str(), pb->c_str());
+            // B16: same case-insensitive rule as action-name matching
+            // (CompareStringOrdinal), so the order doesn't depend on locale.
+            // Returns CSTR_LESS_THAN (1), CSTR_EQUAL (2) or CSTR_GREATER_THAN (3).
+            const int cmp = CompareStringOrdinal(pa->c_str(), static_cast<int>(pa->size()),
+                                                 pb->c_str(), static_cast<int>(pb->size()),
+                                                 TRUE) - CSTR_EQUAL;
             return ascending ? (cmp < 0) : (cmp > 0);
         });
 }
@@ -1496,10 +1576,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         // DPI-correct font on every control, and button width to fit text
         ApplyDpi(hWnd);
 
-        // Load data (connections.json + actionDefinitions.json). Forced here;
-        // the WM_ACTIVATE that follows ShowWindow sees unchanged stamps and
-        // skips a second load.
-        ReloadAllData(hWnd, true);
+        // Data is not loaded here (B19): the window is still hidden, so an
+        // error box would have no visible owner. wWinMain does the first
+        // load right after ShowWindow.
 
         g_hLastFocus = g_hListView;
         return 0;
@@ -1636,8 +1715,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             // Reload connections.json / actionDefinitions.json when the main
             // window regains focus, so edits made in Notepad are picked up
             // with no restart. Only re-reads files whose last-write time or
-            // size changed (B1).
-            ReloadAllData(hWnd, false);
+            // size changed (B1). Skipped while the window is still hidden
+            // (activation during the first ShowWindow): wWinMain does the
+            // first load once the window is visible (B19).
+            if (IsWindowVisible(hWnd)) {
+                ReloadAllData(hWnd, false);
+            }
 
             // Returning 0 without DefWindowProc means Windows won't set focus
             // for us; put it back on the control that last had it.
@@ -1755,6 +1838,12 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
         return 0;
     }
 
+    // B15: single-threaded apartment COM for the UI thread, initialized once.
+    // ShellExecuteEx needs it for shell extensions and some URL handlers, and
+    // the Run dialog (Shell.Application) uses it. Uninitialized after the
+    // message loop ends.
+    const HRESULT hrCom = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+
     // Must run before any window is created.
     Dpi::EnableDpiAwareness();
 
@@ -1797,7 +1886,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
         hInst,
         nullptr);
 
-    if (!hWnd) return 1;
+    if (!hWnd) {
+        if (SUCCEEDED(hrCom)) CoUninitialize();
+        return 1;
+    }
 
     // Work out where the window should open (R8, R10):
     //  - saved placement: saved top-left, saved size scaled for the DPI of
@@ -1854,6 +1946,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     TrackNormalRect(hWnd);  // record the starting rect even if never moved
     UpdateWindow(hWnd);
 
+    // B19: first load of connections.json + actionDefinitions.json, now that
+    // the window is visible (WM_ACTIVATE skips reloading while it is hidden).
+    // Not forced: g_dataLoaded is still false, so this loads both files; if
+    // activation already loaded them after the window became visible, the
+    // stamps are unchanged and this returns at once -- either way the files
+    // are read only once at startup. Also covers a window that opened without
+    // activation (e.g. a shortcut set to "Run: Minimized").
+    ReloadAllData(hWnd, false);
+
     // IsDialogMessageW gives the main window dialog-style keyboard handling:
     // Tab/Shift+Tab, arrow keys between buttons, Enter/Space on buttons.
     MSG msg;
@@ -1862,6 +1963,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+    }
+
+    if (SUCCEEDED(hrCom)) {
+        CoUninitialize();
     }
     return (int)msg.wParam;
 }
