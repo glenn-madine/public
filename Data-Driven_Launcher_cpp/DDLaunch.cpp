@@ -1,7 +1,23 @@
-// Data-Driven Launcher+ version 2.3.1
+// Data-Driven Launcher+ version 2.4.1
 // C++ (Win32 API)
 // Author: Glenn Madine
-// Release_Date: 11/06/2026
+// Release_Date: 11/07/2026
+// Changes in 2.4.1:
+//   - F2: "Edit actionDefinitions.json" and "Launch RDP connection for host
+//         not in this list" swapped places: Edit actionDefinitions.json is
+//         now on the left of the middle row (above Edit connections.json) and
+//         Launch RDP on the right. Tab order follows the new layout.
+// Changes in 2.4.0:
+//   - F1: Quick-launch row above the buttons: a "Host" text box, an "Action"
+//         dropdown filled from actionDefinitions.json, and a "Go" button.
+//         Go runs the chosen action's command/args on the typed host exactly
+//         like a list entry (same quoting, URL rules and error messages).
+//         Enter in the Host box or the dropdown also runs Go. Alt+H / Alt+A /
+//         Alt+G jump to the box, the dropdown and the button.
+//         The dropdown lists each action once (case-insensitive duplicates
+//         are left out, as only the first is ever used), in file order, and
+//         keeps the chosen action when actionDefinitions.json is reloaded.
+//   - List entries and Go share one launch routine, LaunchWithAction().
 // Changes in 2.3.1:
 //   - R13: DDLaunch.rc version resource updated to 2.3.1 (it still said
 //         2.1.2). resource.h now names DDLaunch.rc and drops the unused
@@ -162,13 +178,18 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         		L"v2.3.1"
+#define VERSION         		L"v2.4.1"
 #define IDC_LISTVIEW        	1001
 #define IDC_BTN_RDP         	1002
 #define IDC_BTN_EXIT        	1003
 #define IDC_BTN_EDIT_CONN   	1004
 #define IDC_BTN_EDIT_ACTIONS	1005
 #define IDC_BTN_RUN         	1006
+#define IDC_LBL_HOST        	1007
+#define IDC_EDIT_HOST       	1008
+#define IDC_LBL_ACTION      	1009
+#define IDC_COMBO_ACTION    	1010
+#define IDC_BTN_GO          	1011
 #define WM_LAUNCH				(WM_USER + 1)
 
 // Column indices
@@ -295,11 +316,14 @@ std::vector<Action> loadActions(const std::wstring& filePath) {
 // bIgnoreCase = TRUE compares code points using the operating system's
 // invariant upper-case table -- the same rule the file system uses -- so the
 // result does not depend on the user's locale (unlike _wcsicmp / towupper).
+static bool EqualsIgnoreCase(const std::wstring& a, const std::wstring& b) {
+    return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()),
+                                b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
+
 const Action* findAction(const std::vector<Action>& actions, const std::wstring& actionName) {
     auto it = std::find_if(actions.begin(), actions.end(), [&actionName](const Action& a) {
-        return CompareStringOrdinal(a.action.c_str(), static_cast<int>(a.action.size()),
-                                    actionName.c_str(), static_cast<int>(actionName.size()),
-                                    TRUE) == CSTR_EQUAL;
+        return EqualsIgnoreCase(a.action, actionName);
     });
     return it == actions.end() ? nullptr : &*it;
 }
@@ -958,6 +982,13 @@ static HWND      g_hBtnExit        = nullptr;
 static HWND      g_hBtnEditConn    = nullptr;
 static HWND      g_hBtnEditActions = nullptr;
 static HWND      g_hBtnRun         = nullptr;
+static HWND      g_hLblHost        = nullptr;  // quick-launch row (F1)
+static HWND      g_hEditHost       = nullptr;
+static HWND      g_hLblAction      = nullptr;
+static HWND      g_hComboAction    = nullptr;
+static HWND      g_hBtnGo          = nullptr;
+static int       g_lblHostW        = 0;        // label widths in pixels (fit text)
+static int       g_lblActionW      = 0;
 static HWND      g_hLastFocus      = nullptr;  // restored when re-activated
 static HFONT     g_hFont           = nullptr;  // UI font for the current DPI
 static UINT      g_dpi             = USER_DEFAULT_SCREEN_DPI;
@@ -1191,6 +1222,70 @@ static void WarnAboutDuplicateActions(HWND hWnd, const std::vector<Action>& acti
     }
 }
 
+// ---------------------------------------------------------------------------
+// Quick-launch row: Action dropdown (F1)
+// ---------------------------------------------------------------------------
+
+// Full text of a window (edit box etc.).
+static std::wstring GetWindowTextString(HWND hWnd) {
+    const int len = GetWindowTextLengthW(hWnd);
+    if (len <= 0) {
+        return std::wstring();
+    }
+    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
+    const int got = GetWindowTextW(hWnd, &text[0], len + 1);
+    text.resize(got > 0 ? static_cast<size_t>(got) : 0);
+    return text;
+}
+
+// Name of the action currently chosen in the dropdown, or L"" if none.
+static std::wstring GetSelectedActionName() {
+    if (!g_hComboAction) {
+        return std::wstring();
+    }
+    const int sel = static_cast<int>(SendMessageW(g_hComboAction, CB_GETCURSEL, 0, 0));
+    if (sel < 0) {
+        return std::wstring();
+    }
+    const int len = static_cast<int>(SendMessageW(g_hComboAction, CB_GETLBTEXTLEN, sel, 0));
+    if (len <= 0) {
+        return std::wstring();
+    }
+    std::wstring name(static_cast<size_t>(len) + 1, L'\0');
+    SendMessageW(g_hComboAction, CB_GETLBTEXT, sel, reinterpret_cast<LPARAM>(&name[0]));
+    name.resize(static_cast<size_t>(len));
+    return name;
+}
+
+// Fill the dropdown from g_actions, in file order. Each name appears once:
+// blank names and later case-insensitive duplicates are skipped, since
+// findAction() only ever uses the first (B13). The previously chosen action
+// stays selected if it still exists; otherwise the first one is selected.
+static void PopulateActionCombo() {
+    if (!g_hComboAction) {
+        return;
+    }
+    const std::wstring previous = GetSelectedActionName();
+
+    SendMessageW(g_hComboAction, CB_RESETCONTENT, 0, 0);
+    int selIndex = -1;
+    for (const Action& a : g_actions) {
+        if (a.action.empty() || findAction(g_actions, a.action) != &a) {
+            continue;
+        }
+        const int idx = static_cast<int>(SendMessageW(g_hComboAction, CB_ADDSTRING, 0,
+                                                      reinterpret_cast<LPARAM>(a.action.c_str())));
+        if (selIndex < 0 && idx >= 0 && !previous.empty() && EqualsIgnoreCase(a.action, previous)) {
+            selIndex = idx;
+        }
+    }
+
+    const int count = static_cast<int>(SendMessageW(g_hComboAction, CB_GETCOUNT, 0, 0));
+    if (count > 0) {
+        SendMessageW(g_hComboAction, CB_SETCURSEL, selIndex >= 0 ? selIndex : 0, 0);
+    }
+}
+
 static FileStamp g_connStamp;          // connections.json at last load
 static FileStamp g_actionsStamp;       // actionDefinitions.json at last load
 static bool      g_dataLoaded = false; // false until the first successful pass
@@ -1263,6 +1358,7 @@ static void ReloadAllData(HWND hWnd, bool force) {
     if (reloadActions) {
         try {
             g_actions = loadActions(actionsPath);
+            PopulateActionCombo();                       // F1
             WarnAboutDuplicateActions(hWnd, g_actions);  // B13
         } catch (const std::exception& e) {
             // actionDefinitions.json is missing or not valid JSON (e.g.
@@ -1278,6 +1374,26 @@ static void ReloadAllData(HWND hWnd, bool force) {
     if (devicesChanged && g_hListView) {
         PopulateListView(g_hListView);
     }
+}
+
+// Run `host` with an action's command and args, and report any failure.
+// `what` names the target in the error message. Shared by list entries
+// (OnItemActivated) and the Go button (OnGo), so both behave identically:
+// same host quoting (B11), URL rules (B18) and messages (B3).
+static void LaunchWithAction(HWND hWnd, const Action& action, const std::wstring& host,
+                             const std::wstring& what) {
+    const std::wstring name = ToUpper(action.action);
+    if (action.command.empty()) {
+        MessageBoxW(hWnd,
+            (L"The \"" + name + L"\" action in actionDefinitions.json has an empty \"command\".").c_str(),
+            L"DDLaunch+ - No command", MB_ICONWARNING | MB_OK);
+        return;
+    }
+
+    std::wstring file, params;
+    const DWORD err = LaunchSomething(hWnd, action.command, action.args, host, file, params);
+    ReportLaunchFailure(hWnd, err, what, file, params,
+        L"Check the \"command\" and \"args\" for " + name + L" in actionDefinitions.json.");
 }
 
 static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& actions) {
@@ -1314,18 +1430,41 @@ static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& act
         return;
     }
 
-    if (action->command.empty()) {
+    LaunchWithAction(hWnd, *action, dev.host, L"\"" + hostLabel + L"\" (type " + type + L")");
+}
+
+// Go button (F1): run the action chosen in the dropdown on the host typed in
+// the Host box. Leading/trailing spaces are trimmed; spaces inside the host
+// are handled by the normal quoting/URL rules.
+static void OnGo(HWND hWnd) {
+    std::wstring host = GetWindowTextString(g_hEditHost);
+    const size_t first = host.find_first_not_of(L" \t\r\n");
+    host = (first == std::wstring::npos)
+               ? std::wstring()
+               : host.substr(first, host.find_last_not_of(L" \t\r\n") - first + 1);
+
+    if (host.empty()) {
         MessageBoxW(hWnd,
-            (L"The \"" + type + L"\" action in actionDefinitions.json has an empty \"command\".").c_str(),
-            L"DDLaunch+ - No command", MB_ICONWARNING | MB_OK);
+            L"Type a host name, IP address or URL in the Host box, then click Go.",
+            L"DDLaunch+ - No host", MB_ICONWARNING | MB_OK);
+        SetFocus(g_hEditHost);
         return;
     }
 
-    std::wstring file, params;
-    const DWORD err = LaunchSomething(hWnd, action->command, action->args, dev.host, file, params);
-    ReportLaunchFailure(hWnd, err,
-        L"\"" + hostLabel + L"\" (type " + type + L")", file, params,
-        L"Check the \"command\" and \"args\" for " + type + L" in actionDefinitions.json.");
+    const std::wstring name = GetSelectedActionName();
+    const Action* action = name.empty() ? nullptr : findAction(g_actions, name);
+    if (!action) {
+        MessageBoxW(hWnd,
+            L"No action is selected.\n\n"
+            L"The Action list is filled from actionDefinitions.json. Click "
+            L"\"Edit actionDefinitions.json\" to add actions.",
+            L"DDLaunch+ - No action", MB_ICONWARNING | MB_OK);
+        SetFocus(g_hComboAction);
+        return;
+    }
+
+    LaunchWithAction(hWnd, *action, host,
+                     L"\"" + host + L"\" (action " + ToUpper(action->action) + L")");
 }
 
 // ---------------------------------------------------------------------------
@@ -1473,15 +1612,34 @@ static int MeasureButtonWidth(HWND hWnd) {
     return (std::max)(S(Layout::BTN_MIN_W), widest + S(Layout::BTN_PAD_X));
 }
 
+// Width of `text` in the current UI font, in pixels.
+static int MeasureTextWidth(HWND hWnd, const wchar_t* text) {
+    int width = 0;
+    HDC hdc = GetDC(hWnd);
+    if (hdc) {
+        HGDIOBJ old = SelectObject(hdc, g_hFont ? g_hFont : GetStockObject(DEFAULT_GUI_FONT));
+        SIZE sz = {};
+        if (GetTextExtentPoint32W(hdc, text, static_cast<int>(wcslen(text)), &sz)) {
+            width = sz.cx;
+        }
+        SelectObject(hdc, old);
+        ReleaseDC(hWnd, hdc);
+    }
+    return width;
+}
+
+// Height of everything below the list: the quick-launch row (F1) and the
+// two button rows, with gaps between them and a margin above and below.
 static int ButtonAreaHeight() {
-    return S(Layout::BTN_H) * 2 + S(Layout::ROW_GAP) + S(Layout::MARGIN) * 2;
+    return S(Layout::BTN_H) * 3 + S(Layout::ROW_GAP) * 2 + S(Layout::MARGIN) * 2;
 }
 
 // Apply the current DPI: (re)create the font, set it on every control and
 // re-measure the buttons. Called on WM_CREATE and WM_DPICHANGED.
 static void ApplyDpi(HWND hWnd) {
     HFONT newFont = Dpi::CreateUiFont(g_dpi);
-    const HWND controls[] = { g_hListView, g_hBtnRDP, g_hBtnEditActions,
+    const HWND controls[] = { g_hListView, g_hLblHost, g_hEditHost, g_hLblAction,
+                              g_hComboAction, g_hBtnGo, g_hBtnRDP, g_hBtnEditActions,
                               g_hBtnEditConn, g_hBtnRun, g_hBtnExit };
     for (HWND c : controls) {
         if (c) {
@@ -1495,6 +1653,20 @@ static void ApplyDpi(HWND hWnd) {
     }
     g_hFont = newFont;
     g_btnW  = MeasureButtonWidth(hWnd);
+    // Label captions without the '&' mnemonic marker.
+    g_lblHostW   = MeasureTextWidth(hWnd, L"Host:");
+    g_lblActionW = MeasureTextWidth(hWnd, L"Action:");
+}
+
+// Single-line text label, vertically centered in its rectangle. A '&' in
+// the text underlines the next letter; Alt+that letter (handled by
+// IsDialogMessageW) moves focus to the control created right after it.
+static HWND CreateLabel(HWND hWnd, const wchar_t* text, int id, DWORD align) {
+    return CreateWindowExW(
+        0, L"STATIC", text,
+        WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE | align,
+        0, 0, 0, 0,
+        hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
 }
 
 static HWND CreateButton(HWND hWnd, const wchar_t* text, int id) {
@@ -1563,12 +1735,35 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         lvc.fmt = LVCFMT_LEFT;
         ListView_InsertColumn(g_hListView, 2, &lvc);
 
-        // Buttons are created in on-screen reading order, which is also the
-        // Tab order: top row left-to-right, then bottom row left-to-right.
-        //   [ Launch RDP ... ]        [ Edit actionDefinitions.json ]
-        //   [ Edit connections.json ] [ Run... ] [ Exit ]
-        g_hBtnRDP         = CreateButton(hWnd, L"Launch RDP connection for host not in this list", IDC_BTN_RDP);
+        // Controls are created in on-screen reading order, which is also the
+        // Tab order: quick-launch row, then the two button rows, each
+        // left-to-right. Each label is created just before its control so
+        // its Alt+letter mnemonic focuses that control.
+        //   Host: [ host box          ] Action: [ dropdown ] [ Go ]
+        //   [ Edit actionDefinitions.json ] [ Launch RDP ... ]
+        //   [ Edit connections.json ]       [ Run... ] [ Exit ]
+        g_hLblHost  =CreateLabel(hWnd, L"&Host:", IDC_LBL_HOST, SS_LEFT);
+        g_hEditHost = CreateWindowExW(
+            WS_EX_CLIENTEDGE, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+            0, 0, 0, 0,
+            hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EDIT_HOST)),
+            GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(g_hEditHost, EM_SETLIMITTEXT, 2048, 0);
+        SendMessageW(g_hEditHost, EM_SETCUEBANNER, FALSE,
+                     reinterpret_cast<LPARAM>(L"host name, IP address or URL"));
+
+        g_hLblAction   = CreateLabel(hWnd, L"&Action:", IDC_LBL_ACTION, SS_RIGHT);
+        g_hComboAction = CreateWindowExW(
+            0, WC_COMBOBOXW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+            0, 0, 0, 0,
+            hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_COMBO_ACTION)),
+            GetModuleHandleW(nullptr), nullptr);
+
+        g_hBtnGo          = CreateButton(hWnd, L"&Go", IDC_BTN_GO);
         g_hBtnEditActions = CreateButton(hWnd, L"Edit actionDefinitions.json", IDC_BTN_EDIT_ACTIONS);
+        g_hBtnRDP         = CreateButton(hWnd, L"Launch RDP connection for host not in this list", IDC_BTN_RDP);
         g_hBtnEditConn    = CreateButton(hWnd, L"Edit connections.json", IDC_BTN_EDIT_CONN);
         g_hBtnRun         = CreateButton(hWnd, L"Run...", IDC_BTN_RUN);
         g_hBtnExit        = CreateButton(hWnd, L"Exit", IDC_BTN_EXIT);
@@ -1604,14 +1799,42 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         const int rightX = startX + btnW + gap;
         const int row2Y  = rc.bottom - btnH - margin;
         const int row1Y  = row2Y - rowGap - btnH;
+        const int row0Y  = row1Y - rowGap - btnH;
+        // Run/Exit (and the dropdown/Go above them) split the right-hand slot
+        // so all three rows stay aligned.
+        const int halfW  = (btnW - gap) / 2;
 
-        // Top row: Launch RDP | Edit actionDefinitions.json
-        MoveWindow(g_hBtnRDP,         startX, row1Y, btnW, btnH, TRUE);
-        MoveWindow(g_hBtnEditActions, rightX, row1Y, btnW, btnH, TRUE);
+        // Quick-launch row (F1), aligned to the button columns:
+        //   left slot : "Host:" + host box + "Action:" (label reaches into the gap)
+        //   right slot: dropdown (under/over Run...) | Go (over Exit)
+        {
+            const int labelGap = S(4);
+            const int hostX    = startX + g_lblHostW + labelGap;
+            const int actLblX  = rightX - labelGap - g_lblActionW;
+            const int hostW    = (std::max)(S(40), actLblX - S(8) - hostX);
+
+            MoveWindow(g_hLblHost,   startX,  row0Y, g_lblHostW,   btnH, TRUE);
+            MoveWindow(g_hEditHost,  hostX,   row0Y, hostW,        btnH, TRUE);
+            MoveWindow(g_hLblAction, actLblX, row0Y, g_lblActionW, btnH, TRUE);
+
+            // For a drop-down list the height given is the open list's; the
+            // closed box's height comes from the font. Center the closed box
+            // on the row.
+            MoveWindow(g_hComboAction, rightX, row0Y, halfW, S(200), TRUE);
+            RECT cb = {};
+            GetWindowRect(g_hComboAction, &cb);
+            const int comboH = cb.bottom - cb.top;
+            SetWindowPos(g_hComboAction, nullptr, rightX, row0Y + (btnH - comboH) / 2, 0, 0,
+                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+            MoveWindow(g_hBtnGo, rightX + halfW + gap, row0Y, halfW, btnH, TRUE);
+        }
+
+        // Middle row: Edit actionDefinitions.json | Launch RDP (F2)
+        MoveWindow(g_hBtnEditActions, startX, row1Y, btnW, btnH, TRUE);
+        MoveWindow(g_hBtnRDP,         rightX, row1Y, btnW, btnH, TRUE);
 
         // Bottom row: Edit connections.json | Run... | Exit
-        // Run and Exit split the right-hand slot so both rows stay aligned.
-        const int halfW = (btnW - gap) / 2;
         MoveWindow(g_hBtnEditConn, startX,               row2Y, btnW,  btnH, TRUE);
         MoveWindow(g_hBtnRun,      rightX,               row2Y, halfW, btnH, TRUE);
         MoveWindow(g_hBtnExit,     rightX + halfW + gap, row2Y, halfW, btnH, TRUE);
@@ -1656,12 +1879,20 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_COMMAND: {
         switch (LOWORD(wParam)) {
-        case IDOK:
+        case IDOK: {
             // IsDialogMessageW turns Enter into IDOK when the focused control
-            // isn't a push button. On the list that means "launch".
-            if (GetFocus() == g_hListView) {
+            // isn't a push button. On the list that means "launch"; in the
+            // Host box or the Action dropdown it means "Go" (F1).
+            const HWND focus = GetFocus();
+            if (focus == g_hListView) {
                 ActivateSelection(hWnd);
+            } else if (focus == g_hEditHost || focus == g_hComboAction) {
+                OnGo(hWnd);
             }
+            break;
+        }
+        case IDC_BTN_GO:
+            OnGo(hWnd);
             break;
         case IDCANCEL:
             // Esc: deliberately ignored so it can't close the launcher.
@@ -1826,6 +2057,33 @@ static bool AcquireSingleInstance() {
 }
 
 // ---------------------------------------------------------------------------
+// Alt+H / Alt+A / Alt+G for the quick-launch row (F1)
+//
+// Handled explicitly in the message loop instead of relying on the
+// mnemonic support in IsDialogMessageW, which is not dependable for a
+// window that isn't a real dialog. Returns true if the key was used (the
+// message is then swallowed, so there is no "no menu" beep).
+// ---------------------------------------------------------------------------
+static bool HandleQuickLaunchMnemonic(HWND hWnd, const MSG& msg) {
+    if (msg.message != WM_SYSCHAR || (msg.hwnd != hWnd && !IsChild(hWnd, msg.hwnd))) {
+        return false;
+    }
+    switch (towlower(static_cast<wint_t>(msg.wParam))) {
+    case L'h':                                     // Host box, text selected
+        SetFocus(g_hEditHost);
+        SendMessageW(g_hEditHost, EM_SETSEL, 0, -1);
+        return true;
+    case L'a':                                     // Action dropdown
+        SetFocus(g_hComboAction);
+        return true;
+    case L'g':                                     // Go
+        OnGo(hWnd);
+        return true;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // WinMain
 // ---------------------------------------------------------------------------
 int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
@@ -1959,6 +2217,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     // Tab/Shift+Tab, arrow keys between buttons, Enter/Space on buttons.
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
+        if (HandleQuickLaunchMnemonic(hWnd, msg)) {  // F1: Alt+H / Alt+A / Alt+G
+            continue;
+        }
         if (!IsDialogMessageW(hWnd, &msg)) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);

@@ -1,9 +1,11 @@
 # DDLaunch+ — Data-Driven Launcher
 
-**Version 2.3.1** · Glenn Madine · Released 11/06/2026
+**Version 2.4.1** · Glenn Madine · Released 11/07/2026
 Win32 C++ (Windows SDK) · nlohmann/json 3.12.0
 
 DDLaunch+ is a small Windows launcher for the machines and resources you connect to every day. It shows a list of resources (hosts, drives or shell items), each with a **type** such as `RDP`, `SSH` or `HTTPS`. Double-clicking an entry runs the program or URL handler defined for that type.
+
+For a host that isn't in the list, type it in the **Host** box, pick an **Action**, and click **Go**.
 
 The app has no built-in protocols. Both the list and the launch rules come from two JSON files that you edit in Notepad, and changes appear as soon as you switch back to the window.
 
@@ -30,11 +32,12 @@ The app has no built-in protocols. Both the list and the launch rules come from 
 
 - **Data-driven.** Resources come from `connections.json` and launch rules from `actionDefinitions.json`. Adding a new protocol is a JSON edit, not a code change.
 - **Programs or URLs.** An action's command is either an executable (run with arguments) or a URL prefix of any scheme: `https://`, `ssh://`, `file:///`, `mailto:`, `ms-settings:` and so on.
+- **Quick launch.** A Host box, an Action dropdown filled from `actionDefinitions.json`, and a **Go** button run any action on any host, with the same rules and error messages as a list entry.
 - **Live reload.** Edits are picked up when the window is next activated. Only files whose timestamp or size changed are re-read.
 - **Error-tolerant.** If a file is invalid, the error is shown once and the last good data stays loaded.
 - **Clear error messages** for a missing type, an unknown type, an empty command, a failed launch (with the Win32 error text) and duplicate action names.
 - **Sortable columns.** Sorting ignores case, and the sort order and selected row are kept across reloads.
-- **Keyboard support.** Tab moves between controls and Enter launches. Esc does nothing, so it can't close the launcher by accident.
+- **Keyboard support.** Tab moves between controls, Enter launches, and Alt+H / Alt+A / Alt+G jump to the Host box, the Action dropdown and Go. Esc does nothing, so it can't close the launcher by accident.
 - **Per-Monitor V2 DPI awareness.** Text and layout stay sharp, and rescale when the window moves to a monitor with different scaling.
 - **Remembers its window.** Position, size and maximized state are restored at the next start, and the window is kept on screen.
 - **Single instance.** Starting it again brings the running copy to the front.
@@ -61,7 +64,7 @@ The app has no built-in protocols. Both the list and the launch rules come from 
 | File | Purpose |
 |---|---|
 | `DDLaunch.cpp` | The whole application |
-| `DDLaunch.rc` | Resources: icon, application manifest (RT_MANIFEST id 1), version info (2.3.1.0) |
+| `DDLaunch.rc` | Resources: icon, application manifest (RT_MANIFEST id 1), version info (2.4.1.0) |
 | `DDLaunch.manifest` | Common Controls v6, Per-Monitor V2 DPI, `asInvoker`, supported Windows versions |
 | `resource.h` | Defines `IDI_ICON1` (101) |
 | `DDLaunch.ico` | Application icon |
@@ -109,7 +112,7 @@ This file must be a **top-level JSON array**. Each entry needs all three string 
 
 | Field | Meaning |
 |---|---|
-| `action` | The type name. It is matched against a connection's `type`, ignoring case (`rdp`, `Rdp` and `RDP` are the same). |
+| `action` | The type name. It is matched against a connection's `type`, ignoring case (`rdp`, `Rdp` and `RDP` are the same), and is the name shown in the **Action** dropdown. |
 | `command` | An executable path, or a URL prefix (see [How a launch works](#how-a-launch-works)). |
 | `args` | For an executable: text placed **directly** in front of the host. Include any space you need, e.g. `" /v:"`. Ignored for URLs. |
 
@@ -137,7 +140,8 @@ Rules:
 
 - Backslashes in JSON strings must be doubled (`C:\\Windows\\...`).
 - If any entry is missing a field, or a field isn't a string, the **whole file is rejected**. An error is shown and the previously loaded actions are kept.
-- **Duplicate names** (ignoring case) are reported once each time the file loads. Only the first entry with a given name is used.
+- **Duplicate names** (ignoring case) are reported once each time the file loads. Only the first entry with a given name is used, and only that one appears in the Action dropdown.
+- The dropdown lists actions in file order and leaves out entries with a blank name. Put the action you use most first: it's selected by default.
 
 ### `connections.json`
 
@@ -193,36 +197,41 @@ Written automatically when the app closes (and when Windows logs off or shuts do
 ## Using DDLaunch+
 
 ```
-+----------------------------------------------------------------------+
-| DDLaunch+ v2.3.1 - double-click a row or press Enter to launch       |
-+----------------------------------------------------------------------+
-| Resource (Host, Drive, or Shell Item) |  Type  | Description         |
-| dc01.ynext.corp                       |  RDP   | Domain controller   |
-| admin@pi01                            |  SSH   | Raspberry Pi 01     |
-| ...                                                                  |
-|                                                                      |
-| [ Launch RDP connection for host...] [ Edit actionDefinitions.json ] |
-| [ Edit connections.json           ] [ Run...      ] [ Exit        ]  |
-+----------------------------------------------------------------------+
++-----------------------------------------------------------------------+
+| DDLaunch+ v2.4.1 - double-click a row or press Enter to launch        |
++-----------------------------------------------------------------------+
+| Resource (Host, Drive, or Shell Item) |  Type  | Description          |
+| dc01.ynext.corp                       |  RDP   | Domain controller    |
+| admin@pi01                            |  SSH   | Raspberry Pi 01      |
+| ...                                                                   |
+|                                                                       |
+| Host: [host name, IP address or URL]   Action: [RDP     v] [   Go   ] |
+| [ Edit actionDefinitions.json     ] [ Launch RDP connection for... ]  |
+| [ Edit connections.json           ] [ Run...      ] [ Exit         ]  |
++-----------------------------------------------------------------------+
 ```
 
 | Control | Action |
 |---|---|
 | Double-click a row / **Enter** on the list | Launch the selected entry |
 | Click a column header | Sort by that column; click again to reverse the order |
-| **Launch RDP connection for host not in this list** | Opens Remote Desktop Connection (`mstsc.exe`) empty |
+| **Host** box | Type a host name, `user@host`, `host:port`, a path or a full URL |
+| **Action** dropdown | Choose an action from `actionDefinitions.json` |
+| **Go** / **Enter** in the Host box or dropdown | Run the chosen action on the typed host |
 | **Edit actionDefinitions.json** / **Edit connections.json** | Opens the file in Notepad |
+| **Launch RDP connection for host not in this list** | Opens Remote Desktop Connection (`mstsc.exe`) empty |
 | **Run...** | The Windows Run dialog (same as Win+R) |
 | **Exit** | Saves the window position and closes |
 
 **Keyboard**
 
-- Tab and Shift+Tab move between the list and the buttons, in the order shown on screen.
-- Enter or Space presses the focused button. Enter on the list launches the selected entry.
+- Tab and Shift+Tab move through the controls in the order shown on screen: the list, Host, Action, Go, then the two button rows from left to right.
+- Enter or Space presses the focused button. Enter on the list launches the selected entry. Enter in the Host box or the Action dropdown runs **Go**.
+- **Alt+H** moves to the Host box and selects its text, **Alt+A** moves to the Action dropdown, and **Alt+G** runs Go.
 - **Esc is ignored** on purpose.
 - When you switch back to the window, focus returns to the control that last had it.
 
-**Live editing.** Edit a file in Notepad, save it, and click back into DDLaunch+. The list updates and the selected row and sort order are kept.
+**Live editing.** Edit a file in Notepad, save it, and click back into DDLaunch+. The list and the Action dropdown update, and the selected row, sort order and chosen action are kept. The Host box keeps its text after Go, so you can run the same host again or with a different action.
 
 **Window.** There's a minimum size, so the buttons never overlap and some of the list always shows. If a shortcut is set to "Run: Minimized", that setting takes priority over a saved maximized state.
 
@@ -230,9 +239,17 @@ Written automatically when the app closes (and when Windows logs off or shuts do
 
 ## How a launch works
 
+**From the list**
+
 1. The selected row's ID is used to look up the entry (not the row position or the cell text).
 2. Its `type` is matched to an action, ignoring case.
-3. The action's `command` decides how the launch is done:
+
+**From the quick-launch row (Go)**
+
+1. Spaces at the start and end of the Host box text are removed. If nothing is left, a *No host* message appears.
+2. The action chosen in the dropdown is looked up by name.
+
+**Both paths** then call the same routine, `LaunchWithAction`, so they behave the same. The action's `command` decides how the launch is done:
 
 ### Executable command
 
@@ -248,7 +265,7 @@ If the host contains spaces, tabs or quotes, it is quoted using standard Windows
 
 A command starting with an RFC 3986 scheme of two or more characters is treated as a URL (`C:` is a drive letter, not a scheme). `args` is ignored.
 
-| Host in `connections.json` | Command | Opened |
+| Host (list entry or Host box) | Command | Opened |
 |---|---|---|
 | `piweb.ynext.corp` | `https://` | `https://piweb.ynext.corp` |
 | `dc01:8443` | `https://` | `https://dc01:8443` (host:port is still appended) |
@@ -273,6 +290,8 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 | **No type** | The entry has no `type`. Add one in `connections.json`. |
 | **Unknown type** | No action matches. The message lists the defined actions; add one, or fix the type. |
 | **No command** | The matching action has `"command": ""`. |
+| **No host** (Go) | The Host box is empty. Type a host, then click Go. |
+| **No action** (Go) | The dropdown is empty because `actionDefinitions.json` has no usable actions. Add some with **Edit actionDefinitions.json**. |
 | **Launch failed** (Error *n*) | Windows couldn't run it: wrong path, no handler for the URL scheme, etc. Check `command` and `args`. |
 | **Duplicate actions** | Two actions have the same name (ignoring case). Only the first is used. |
 | **connections.json is not valid JSON** | Shows the parser's message with its position. The old list is kept. |
@@ -292,7 +311,7 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 | Area | Key functions / types | What it does |
 |---|---|---|
 | Text conversion | `Utf8ToWide`, `WideToUtf8`, `ExceptionText` | Converts between UTF-8 (on disk and in nlohmann/json) and UTF-16 (Win32). Exception text is converted before it reaches `MessageBoxW`. |
-| Actions | `struct Action`, `from_json`, `loadActions`, `findAction` | Parses `actionDefinitions.json` and finds actions ignoring case (`CompareStringOrdinal`). |
+| Actions | `struct Action`, `from_json`, `loadActions`, `EqualsIgnoreCase`, `findAction` | Parses `actionDefinitions.json` and finds actions ignoring case (`CompareStringOrdinal`). |
 | File reading | `ReadFileUtf8` | Reads with `CreateFileW`/`ReadFile`, so non-ASCII paths work. Allows read, write and delete sharing. |
 | Devices | `struct Device`, `LoadConnections` | Accepts an array or an object of groups. Returns `std::nullopt` on error so the caller keeps the old list. |
 | Paths and seeding | `GetUserProfileDir`, `GetDataDir`, `EnsureDataFiles`, `CreateFileWithDefaultContent` | Resolves `%USERPROFILE%\DDLaunch` and creates missing files (`CREATE_NEW`, never overwrites). |
@@ -304,21 +323,22 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 | Sorting | `ApplyCurrentSort`, `ToggleSortColumn`, `UpdateHeaderSortArrow` | `std::stable_sort` comparing with `CompareStringOrdinal` (ignoring case), plus the header arrows. |
 | Identity | `AssignDeviceIds`, `FindDeviceIndexById`, `GetRowDeviceId` | Stable IDs stored in each row's `lParam`. |
 | List view | `PopulateListView` | Refills the list with redraw paused, restoring the selection and focus. |
-| Reload | `FileStamp`, `GetFileStamp`, `ReloadAllData`, `WarnAboutDuplicateActions` | Reloads only changed files, with a re-entrancy guard and one error per save. |
-| Launch logic | `OnItemActivated`, `ActivateSelection` | Validates the entry, finds the action, launches and reports. |
-| Layout | `namespace Layout`, `S()`, `MeasureButtonWidth`, `ApplyDpi`, `RescaleForDpi` | 96-DPI design values. Buttons are sized to fit their text. |
+| Action dropdown | `GetWindowTextString`, `GetSelectedActionName`, `PopulateActionCombo` | Fills the dropdown from `g_actions` in file order, one entry per name, and keeps the current choice across reloads. |
+| Reload | `FileStamp`, `GetFileStamp`, `ReloadAllData`, `WarnAboutDuplicateActions` | Reloads only changed files, with a re-entrancy guard and one error per save. A successful actions load also refreshes the dropdown. |
+| Launch logic | `LaunchWithAction`, `OnItemActivated`, `ActivateSelection`, `OnGo` | One shared routine checks the command, launches and reports. `OnItemActivated` validates a list entry first; `OnGo` validates the Host box and the dropdown choice. |
+| Layout | `namespace Layout`, `S()`, `MeasureButtonWidth`, `MeasureTextWidth`, `ButtonAreaHeight`, `ApplyDpi`, `RescaleForDpi`, `CreateButton`, `CreateLabel` | 96-DPI design values. Buttons and labels are sized to fit their text. Below the list are three rows: quick launch, then two rows of buttons. |
 | Window | `WndProc` | `WM_CREATE`, `WM_SIZE`, `WM_GETMINMAXINFO`, `WM_MOVE`, `WM_DPICHANGED`, `WM_COMMAND`, `WM_NOTIFY`, `WM_ACTIVATE`, `WM_SETFOCUS`, `WM_ENDSESSION`, `WM_DESTROY` |
-| Startup | `CheckCommonControlsVersion`, `AcquireSingleInstance`, `wWinMain` | Single-instance check → COM (STA) → DPI → common controls → window class → placement → show → first load → message loop. |
+| Startup | `CheckCommonControlsVersion`, `AcquireSingleInstance`, `HandleQuickLaunchMnemonic`, `wWinMain` | Single-instance check → COM (STA) → DPI → common controls → window class → placement → show → first load → message loop. |
 
 ### Startup sequence (`wWinMain`)
 
 1. **Single instance.** If the `Local\DDLaunchPlus.SingleInstance…` mutex already exists, find the `DDLaunchClass` window, restore it, bring it to the front and exit.
 2. `CoInitializeEx` (single-threaded apartment, for `ShellExecuteEx` and the Run dialog).
 3. DPI awareness fallback (normally already set by the manifest), then `InitCommonControlsEx` and the Common Controls v6 check.
-4. Register the class (large and small icons at their exact sizes) and create the hidden window. `WM_CREATE` builds the list view and buttons and applies the DPI font.
+4. Register the class (large and small icons at their exact sizes) and create the hidden window. `WM_CREATE` builds the list view, the quick-launch row and the buttons, in on-screen order (which sets the Tab order), and applies the DPI font.
 5. Work out the window rectangle from `settings.json` or the default, scaled for the target monitor and clamped to its work area. Move the window with `g_placingWindow` set so it isn't scaled twice, then rescale to the final DPI.
-6. Show the window (maximized if it was saved that way), then do the **first data load**, so any error box appears over a visible window.
-7. Message loop with `IsDialogMessageW`, then `CoUninitialize`.
+6. Show the window (maximized if it was saved that way), then do the **first data load**, so any error box appears over a visible window. This load also fills the Action dropdown.
+7. Message loop: `HandleQuickLaunchMnemonic` (Alt+H / Alt+A / Alt+G), then `IsDialogMessageW`, then `CoUninitialize`.
 
 ---
 
@@ -329,6 +349,8 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 - **Stable device IDs.** On reload, IDs are carried over first by an exact match (host + type + description), then by host + type. So the selection survives sorting and editing a description, and launching never depends on the row position.
 - **Case rules.** Action matching, duplicate detection and sorting all use `CompareStringOrdinal(…, TRUE)`, the same invariant rule the file system uses, so the result doesn't depend on locale.
 - **DPI.** All sizes are 96-DPI design values passed through `S()`. On `WM_DPICHANGED` the font, column widths and button widths are rebuilt, and the window takes the size Windows suggests.
+- **One launch path.** List entries and Go both call `LaunchWithAction`, so host quoting, the URL rules and error messages can't drift apart.
+- **Mnemonics.** The underlined letters in Host, Action and Go are handled in the message loop. The mnemonic support in `IsDialogMessageW` isn't dependable for a window that isn't a real dialog. The Alt+letter message is consumed there, so Windows doesn't beep for a missing menu.
 - **Single manifest.** The manifest comes only from `DDLaunch.rc`. There is no `#pragma comment(linker, "/manifestdependency…")`, and the linker is built with `/MANIFEST:NO`.
 - **Single instance per logon session.** The mutex is in the `Local\` namespace, so separate RDP sessions each get their own copy.
 
@@ -341,6 +363,7 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 - **Edit** buttons always use Notepad.
 - `args` is ignored for URL actions, and a URL can only be built as prefix + host.
 - Only the characters listed above are percent-encoded. A literal `#` or `%` in a host is passed as-is.
+- The Host box has no history, and the chosen action isn't saved between runs. The first action in the file is selected at startup.
 - The **Launch RDP…** button runs `mstsc.exe` found through the search path and the App Paths registry key.
 
 ---
@@ -349,7 +372,9 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 
 | Version | Highlights |
 |---|---|
-| **2.3.1** | Version resource corrected; `resource.h` cleaned up; COM initialized once on the UI thread; ordinal sort; config files opened with full sharing; URL hosts may be full URLs, and unsafe characters are percent-encoded; first load happens after the window is shown. |
+| **2.4.1** | **Edit actionDefinitions.json** and **Launch RDP connection…** swapped places. Edit actionDefinitions.json is now on the left, above Edit connections.json, and Tab order follows the new layout. |
+| 2.4.0 | Quick-launch row: Host box, Action dropdown (filled from `actionDefinitions.json`) and Go button. Enter and Alt+H / A / G shortcuts. One shared launch routine for list entries and Go. |
+| 2.3.1 | Version resource corrected; `resource.h` cleaned up; COM initialized once on the UI thread; ordinal sort; config files opened with full sharing; URL hosts may be full URLs, and unsafe characters are percent-encoded; first load happens after the window is shown. |
 | 2.3.0 | Hosts with spaces are quoted; duplicate action warning; stable device IDs; single instance; new window title. |
 | 2.2.0 | Action names ignore case; selection kept across sort and reload; a bad `connections.json` keeps the old list; Unicode-safe error messages; dead code removed. |
 | 2.1.2 | One manifest source (`DDLaunch.rc` + `/MANIFEST:NO`); Common Controls v6 self-check. |

@@ -1,4 +1,4 @@
-// DDLaunch.rc -- resources for DDLaunch+ v2.3.1
+// DDLaunch.rc -- resources for DDLaunch+ v2.4.1
 //
 // Build:  rc /nologo DDLaunch.rc      (produces DDLaunch.res)
 // Then link DDLaunch.res with /MANIFEST:NO (see DDLaunch.cpp header).
@@ -25,8 +25,8 @@ CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "DDLaunch.manifest"
 // Version information (shown in File Explorer > Properties > Details)
 // ---------------------------------------------------------------------------
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION     2,3,1,0
- PRODUCTVERSION  2,3,1,0
+ FILEVERSION     2,4,1,0
+ PRODUCTVERSION  2,4,1,0
  FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
  FILEFLAGS       0x0L
  FILEOS          VOS_NT_WINDOWS32
@@ -39,11 +39,11 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Glenn Madine"
             VALUE "FileDescription",  "DDLaunch+ Data-Driven Launcher"
-            VALUE "FileVersion",      "2.3.1.0"
+            VALUE "FileVersion",      "2.4.1.0"
             VALUE "InternalName",     "DDLaunch"
             VALUE "OriginalFilename", "DDLaunch.exe"
             VALUE "ProductName",      "DDLaunch+"
-            VALUE "ProductVersion",   "2.3.1.0"
+            VALUE "ProductVersion",   "2.4.1.0"
         END
     END
     BLOCK "VarFileInfo"
