@@ -1,11 +1,11 @@
 # DDLaunch+ — Data-Driven Launcher
 
-**Version 2.4.1** · Glenn Madine · Released 11/07/2026
+**Version 2.5.0** · Glenn Madine · Released 11/07/2026
 Win32 C++ (Windows SDK) · nlohmann/json 3.12.0
 
 DDLaunch+ is a small Windows launcher for the machines and resources you connect to every day. It shows a list of resources (hosts, drives or shell items), each with a **type** such as `RDP`, `SSH` or `HTTPS`. Double-clicking an entry runs the program or URL handler defined for that type.
 
-For a host that isn't in the list, type it in the **Host** box, pick an **Action**, and click **Go**.
+For a host that isn't in the list, type it in the **Host** box, pick an **Action**, and click **Go**. The Host box remembers the hosts you launch this way, together with the action used for each.
 
 The app has no built-in protocols. Both the list and the launch rules come from two JSON files that you edit in Notepad, and changes appear as soon as you switch back to the window.
 
@@ -32,7 +32,8 @@ The app has no built-in protocols. Both the list and the launch rules come from 
 
 - **Data-driven.** Resources come from `connections.json` and launch rules from `actionDefinitions.json`. Adding a new protocol is a JSON edit, not a code change.
 - **Programs or URLs.** An action's command is either an executable (run with arguments) or a URL prefix of any scheme: `https://`, `ssh://`, `file:///`, `mailto:`, `ms-settings:` and so on.
-- **Quick launch.** A Host box, an Action dropdown filled from `actionDefinitions.json`, and a **Go** button run any action on any host, with the same rules and error messages as a list entry.
+- **Quick launch.** A Host box, an Action dropdown filled from `actionDefinitions.json` (sorted A to Z), and a **Go** button run any action on any host, with the same rules and error messages as a list entry.
+- **Host history.** The Host box is an editable dropdown that remembers up to 25 hosts launched with Go, most recent first. Picking one also selects the action it was last launched with, and Shift+Delete removes an entry. The history is kept in `settings.json`, so it survives restarts.
 - **Live reload.** Edits are picked up when the window is next activated. Only files whose timestamp or size changed are re-read.
 - **Error-tolerant.** If a file is invalid, the error is shown once and the last good data stays loaded.
 - **Clear error messages** for a missing type, an unknown type, an empty command, a failed launch (with the Win32 error text) and duplicate action names.
@@ -64,7 +65,7 @@ The app has no built-in protocols. Both the list and the launch rules come from 
 | File | Purpose |
 |---|---|
 | `DDLaunch.cpp` | The whole application |
-| `DDLaunch.rc` | Resources: icon, application manifest (RT_MANIFEST id 1), version info (2.4.1.0) |
+| `DDLaunch.rc` | Resources: icon, application manifest (RT_MANIFEST id 1), version info (2.5.0.0) |
 | `DDLaunch.manifest` | Common Controls v6, Per-Monitor V2 DPI, `asInvoker`, supported Windows versions |
 | `resource.h` | Defines `IDI_ICON1` (101) |
 | `DDLaunch.ico` | Application icon |
@@ -90,13 +91,13 @@ CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 DDLaunch.cpp DDLau
 
 ## First run and the data folder
 
-All user data lives in **`%USERPROFILE%\DDLaunch\`** (for example `C:\Users\glenn\DDLaunch`).
+All user data lives in `%USERPROFILE%\DDLaunch\` (for example `C:\Users\glenn\DDLaunch`).
 
 | File | Created automatically? | Purpose |
 |---|---|---|
 | `actionDefinitions.json` | Yes, with RDP / SSH / HTTPS / HTTP | Launch rules, one per type |
 | `connections.json` | Yes, as `[]` | The resources shown in the list |
-| `settings.json` | Written on exit | Window position, size and maximized state |
+| `settings.json` | Written on exit and whenever the Host history changes | Window position, size and maximized state, and the Host box history |
 
 - The folder and the two config files are created whenever they're missing: at startup, on reload, and before opening a file for editing. Existing files are never overwritten.
 - If `%USERPROFILE%` isn't set, the app uses the Profile known folder instead. If that can't be found either, it uses the folder containing `DDLaunch.exe`.
@@ -141,7 +142,8 @@ Rules:
 - Backslashes in JSON strings must be doubled (`C:\\Windows\\...`).
 - If any entry is missing a field, or a field isn't a string, the **whole file is rejected**. An error is shown and the previously loaded actions are kept.
 - **Duplicate names** (ignoring case) are reported once each time the file loads. Only the first entry with a given name is used, and only that one appears in the Action dropdown.
-- The dropdown lists actions in file order and leaves out entries with a blank name. Put the action you use most first: it's selected by default.
+- The dropdown lists actions **sorted A to Z** (ignoring case) and leaves out entries with a blank name.
+- The **first action in the file** is selected at startup, even if it isn't first alphabetically. Put the action you use most first.
 
 ### `connections.json`
 
@@ -180,17 +182,23 @@ Notes:
 
 ### `settings.json`
 
-Written automatically when the app closes (and when Windows logs off or shuts down):
+Written automatically when the app closes (and when Windows logs off or shuts down), and right after every change to the Host box history:
 
 ```json
 {
-    "window": { "x": 120, "y": 80, "width": 640, "height": 420, "maximized": false }
+    "window": { "x": 120, "y": 80, "width": 640, "height": 420, "maximized": false },
+    "hostHistory": [
+        { "host": "fileserver02", "action": "RDP" },
+        { "host": "admin@pi07",   "action": "SSH" }
+    ]
 }
 ```
 
 - `x`/`y` are screen pixels. `width`/`height` are in 96-DPI units, so the window keeps the same apparent size on monitors with different scaling.
 - The file is written to a temporary file first and then swapped in, so it can't be left half-written.
 - Values that are out of range (under 100 or over 20000) or a corrupt file are ignored silently, and the default size is used.
+- `hostHistory` is most recent first, at most 25 entries. Entries without a `host`, and repeats of a host (ignoring case), are skipped when the file is read. An `action` that no longer exists is kept but not applied.
+- You can edit or clear `hostHistory` by hand while DDLaunch+ is closed. While it's running, the app's own copy overwrites the file on the next save.
 
 ---
 
@@ -198,14 +206,14 @@ Written automatically when the app closes (and when Windows logs off or shuts do
 
 ```
 +-----------------------------------------------------------------------+
-| DDLaunch+ v2.4.1 - double-click a row or press Enter to launch        |
+| DDLaunch+ v2.5.0 - double-click a row or press Enter to launch        |
 +-----------------------------------------------------------------------+
 | Resource (Host, Drive, or Shell Item) |  Type  | Description          |
 | dc01.ynext.corp                       |  RDP   | Domain controller    |
 | admin@pi01                            |  SSH   | Raspberry Pi 01      |
 | ...                                                                   |
 |                                                                       |
-| Host: [host name, IP address or URL]   Action: [RDP     v] [   Go   ] |
+| Host: [host name, IP or URL      v]  Action: [RDP     v] [    Go    ] |
 | [ Edit actionDefinitions.json     ] [ Launch RDP connection for... ]  |
 | [ Edit connections.json           ] [ Run...      ] [ Exit         ]  |
 +-----------------------------------------------------------------------+
@@ -215,8 +223,8 @@ Written automatically when the app closes (and when Windows logs off or shuts do
 |---|---|
 | Double-click a row / **Enter** on the list | Launch the selected entry |
 | Click a column header | Sort by that column; click again to reverse the order |
-| **Host** box | Type a host name, `user@host`, `host:port`, a path or a full URL |
-| **Action** dropdown | Choose an action from `actionDefinitions.json` |
+| **Host** box | Type a host name, `user@host`, `host:port`, a path or a full URL, or open the list (arrow, F4 or Alt+Down) to pick a recent host |
+| **Action** dropdown | Choose an action from `actionDefinitions.json`, sorted A to Z. Typing a letter jumps to the first action starting with it. |
 | **Go** / **Enter** in the Host box or dropdown | Run the chosen action on the typed host |
 | **Edit actionDefinitions.json** / **Edit connections.json** | Opens the file in Notepad |
 | **Launch RDP connection for host not in this list** | Opens Remote Desktop Connection (`mstsc.exe`) empty |
@@ -228,10 +236,18 @@ Written automatically when the app closes (and when Windows logs off or shuts do
 - Tab and Shift+Tab move through the controls in the order shown on screen: the list, Host, Action, Go, then the two button rows from left to right.
 - Enter or Space presses the focused button. Enter on the list launches the selected entry. Enter in the Host box or the Action dropdown runs **Go**.
 - **Alt+H** moves to the Host box and selects its text, **Alt+A** moves to the Action dropdown, and **Alt+G** runs Go.
+- In the Host box, **F4** or **Alt+Down** opens the history and the arrow keys move through it. With the list open, **Shift+Delete** removes the highlighted entry.
 - **Esc is ignored** on purpose.
 - When you switch back to the window, focus returns to the control that last had it.
 
 **Live editing.** Edit a file in Notepad, save it, and click back into DDLaunch+. The list and the Action dropdown update, and the selected row, sort order and chosen action are kept. The Host box keeps its text after Go, so you can run the same host again or with a different action.
+
+**Host history.**
+
+- Each **successful** Go launch puts the host at the top of the history, with the action used. Launches that fail (or are cancelled at a UAC prompt) aren't added.
+- Launching a host that's already in the history moves it to the top instead of adding it twice (ignoring case). The oldest entries drop off after 25.
+- Picking a host from the history also selects its last action, if that action still exists.
+- Hosts launched from the list aren't added, since they're already in the list.
 
 **Window.** There's a minimum size, so the buttons never overlap and some of the list always shows. If a shortcut is set to "Run: Minimized", that setting takes priority over a saved maximized state.
 
@@ -248,6 +264,7 @@ Written automatically when the app closes (and when Windows logs off or shuts do
 
 1. Spaces at the start and end of the Host box text are removed. If nothing is left, a *No host* message appears.
 2. The action chosen in the dropdown is looked up by name.
+3. If the launch succeeds, the host and action are added to the Host history and `settings.json` is saved.
 
 **Both paths** then call the same routine, `LaunchWithAction`, so they behave the same. The action's `command` decides how the launch is done:
 
@@ -319,13 +336,14 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 | Launching | `StartsWithUrlScheme`, `HostIsFullUrl`, `EncodeUrlUnsafeChars`, `QuoteArgIfNeeded`, `LaunchSomething`, `ShellOpen`, `ReportLaunchFailure`, `GetErrorText` | Detects URLs, builds the URL or quotes the argument, launches via `ShellExecuteExW` and reports errors. |
 | Run dialog | `ShowRunDialog` | `Shell.Application` → `IShellDispatch::FileRun` (documented API, not the shell32 ordinal 61). |
 | DPI | `namespace Dpi` (`EnableDpiAwareness`, `ForWindow`, `ForMonitor`, `Scale`, `CreateUiFont`, `WindowSizeForClient`) | Newer APIs are loaded at run time, so the exe still starts on older Windows. |
-| Placement | `ClampToWorkArea`, `WindowSettings`, `LoadWindowSettings`, `SaveWindowSettings`, `TrackNormalRect` | Saves and restores the window, and keeps it inside the monitor's work area. |
+| Placement and settings | `ClampToWorkArea`, `WindowSettings`, `LoadWindowSettings`, `SaveSettings`, `TrackNormalRect` | Saves and restores the window, keeps it inside the monitor's work area, and writes `settings.json` (window and Host history) atomically. |
+| Host history | `HostHistoryEntry`, `g_hostHistory`, `LoadHostHistory`, `RefreshHostHistoryCombo`, `OnHostHistoryPicked`, `AddHostHistory`, `HandleHostHistoryDelete` | Loads, shows, updates and saves the Host box history. A dropdown index is also an index into `g_hostHistory`. |
 | Sorting | `ApplyCurrentSort`, `ToggleSortColumn`, `UpdateHeaderSortArrow` | `std::stable_sort` comparing with `CompareStringOrdinal` (ignoring case), plus the header arrows. |
 | Identity | `AssignDeviceIds`, `FindDeviceIndexById`, `GetRowDeviceId` | Stable IDs stored in each row's `lParam`. |
 | List view | `PopulateListView` | Refills the list with redraw paused, restoring the selection and focus. |
-| Action dropdown | `GetWindowTextString`, `GetSelectedActionName`, `PopulateActionCombo` | Fills the dropdown from `g_actions` in file order, one entry per name, and keeps the current choice across reloads. |
+| Action dropdown | `GetWindowTextString`, `GetSelectedActionName`, `PopulateActionCombo` | Fills the dropdown from `g_actions`, one entry per name, sorted with `CompareStringOrdinal`. Keeps the current choice across reloads; otherwise selects the file's first action. |
 | Reload | `FileStamp`, `GetFileStamp`, `ReloadAllData`, `WarnAboutDuplicateActions` | Reloads only changed files, with a re-entrancy guard and one error per save. A successful actions load also refreshes the dropdown. |
-| Launch logic | `LaunchWithAction`, `OnItemActivated`, `ActivateSelection`, `OnGo` | One shared routine checks the command, launches and reports. `OnItemActivated` validates a list entry first; `OnGo` validates the Host box and the dropdown choice. |
+| Launch logic | `LaunchWithAction`, `OnItemActivated`, `ActivateSelection`, `OnGo` | One shared routine checks the command, launches, reports and returns whether it succeeded. `OnItemActivated` validates a list entry first; `OnGo` validates the Host box and the dropdown choice, and adds successful launches to the history. |
 | Layout | `namespace Layout`, `S()`, `MeasureButtonWidth`, `MeasureTextWidth`, `ButtonAreaHeight`, `ApplyDpi`, `RescaleForDpi`, `CreateButton`, `CreateLabel` | 96-DPI design values. Buttons and labels are sized to fit their text. Below the list are three rows: quick launch, then two rows of buttons. |
 | Window | `WndProc` | `WM_CREATE`, `WM_SIZE`, `WM_GETMINMAXINFO`, `WM_MOVE`, `WM_DPICHANGED`, `WM_COMMAND`, `WM_NOTIFY`, `WM_ACTIVATE`, `WM_SETFOCUS`, `WM_ENDSESSION`, `WM_DESTROY` |
 | Startup | `CheckCommonControlsVersion`, `AcquireSingleInstance`, `HandleQuickLaunchMnemonic`, `wWinMain` | Single-instance check → COM (STA) → DPI → common controls → window class → placement → show → first load → message loop. |
@@ -336,9 +354,9 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 2. `CoInitializeEx` (single-threaded apartment, for `ShellExecuteEx` and the Run dialog).
 3. DPI awareness fallback (normally already set by the manifest), then `InitCommonControlsEx` and the Common Controls v6 check.
 4. Register the class (large and small icons at their exact sizes) and create the hidden window. `WM_CREATE` builds the list view, the quick-launch row and the buttons, in on-screen order (which sets the Tab order), and applies the DPI font.
-5. Work out the window rectangle from `settings.json` or the default, scaled for the target monitor and clamped to its work area. Move the window with `g_placingWindow` set so it isn't scaled twice, then rescale to the final DPI.
+5. Work out the window rectangle from `settings.json` or the default, scaled for the target monitor and clamped to its work area. Move the window with `g_placingWindow` set so it isn't scaled twice, then rescale to the final DPI. Load the Host history from `settings.json` into the Host box.
 6. Show the window (maximized if it was saved that way), then do the **first data load**, so any error box appears over a visible window. This load also fills the Action dropdown.
-7. Message loop: `HandleQuickLaunchMnemonic` (Alt+H / Alt+A / Alt+G), then `IsDialogMessageW`, then `CoUninitialize`.
+7. Message loop: `HandleQuickLaunchMnemonic` (Alt+H / Alt+A / Alt+G), `HandleHostHistoryDelete` (Shift+Delete in the open history list), then `IsDialogMessageW`. `CoUninitialize` runs after the loop ends.
 
 ---
 
@@ -347,9 +365,11 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 - **Change detection.** A `FileStamp` (exists, last-write time, size) is recorded before parsing. On activation, a file is re-read only if its stamp changed. This prevents an error box from reappearing in a loop, and avoids reading the files again on every focus change.
 - **Re-entrancy.** `MessageBoxW` runs its own message loop, which can deliver `WM_ACTIVATE` in the middle of a reload. `g_inReload` (cleared automatically on every exit path) ignores those nested calls.
 - **Stable device IDs.** On reload, IDs are carried over first by an exact match (host + type + description), then by host + type. So the selection survives sorting and editing a description, and launching never depends on the row position.
-- **Case rules.** Action matching, duplicate detection and sorting all use `CompareStringOrdinal(…, TRUE)`, the same invariant rule the file system uses, so the result doesn't depend on locale.
+- **Case rules.** Action matching, duplicate detection, the history's duplicate check, and both sorts (list columns and Action dropdown) use `CompareStringOrdinal(…, TRUE)`, the same invariant rule the file system uses, so the result doesn't depend on locale.
 - **DPI.** All sizes are 96-DPI design values passed through `S()`. On `WM_DPICHANGED` the font, column widths and button widths are rebuilt, and the window takes the size Windows suggests.
 - **One launch path.** List entries and Go both call `LaunchWithAction`, so host quoting, the URL rules and error messages can't drift apart.
+- **History saved immediately.** `settings.json` is rewritten (temporary file, then swap) after every history change, not only on exit, so a history entry isn't lost if the app is killed or the PC loses power.
+- **Combo box focus.** In the Host box, keyboard focus is on the combo box's own edit child, so the Enter-runs-Go check accepts the box or any of its children.
 - **Mnemonics.** The underlined letters in Host, Action and Go are handled in the message loop. The mnemonic support in `IsDialogMessageW` isn't dependable for a window that isn't a real dialog. The Alt+letter message is consumed there, so Windows doesn't beep for a missing menu.
 - **Single manifest.** The manifest comes only from `DDLaunch.rc`. There is no `#pragma comment(linker, "/manifestdependency…")`, and the linker is built with `/MANIFEST:NO`.
 - **Single instance per logon session.** The mutex is in the `Local\` namespace, so separate RDP sessions each get their own copy.
@@ -363,7 +383,8 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 - **Edit** buttons always use Notepad.
 - `args` is ignored for URL actions, and a URL can only be built as prefix + host.
 - Only the characters listed above are percent-encoded. A literal `#` or `%` in a host is passed as-is.
-- The Host box has no history, and the chosen action isn't saved between runs. The first action in the file is selected at startup.
+- The chosen action isn't saved between runs; the first action in the file is selected at startup.
+- The Host history can't be turned off or cleared in one step from the window. Remove entries with Shift+Delete, or edit `settings.json` while the app is closed.
 - The **Launch RDP…** button runs `mstsc.exe` found through the search path and the App Paths registry key.
 
 ---
@@ -372,7 +393,9 @@ Every launch goes through `ShellExecuteExW`. If Windows can't open it, DDLaunch+
 
 | Version | Highlights |
 |---|---|
-| **2.4.1** | **Edit actionDefinitions.json** and **Launch RDP connection…** swapped places. Edit actionDefinitions.json is now on the left, above Edit connections.json, and Tab order follows the new layout. |
+| **2.5.0** | Host box history: an editable dropdown of up to 25 hosts launched with Go, most recent first, each with its action. Picking a host restores its action; Shift+Delete removes an entry. Saved in `settings.json` after every change. |
+| 2.4.2 | Action dropdown sorted A to Z (ignoring case). The file's first action is still selected by default. |
+| 2.4.1 | **Edit actionDefinitions.json** and **Launch RDP connection…** swapped places. Edit actionDefinitions.json is now on the left, above Edit connections.json, and Tab order follows the new layout. |
 | 2.4.0 | Quick-launch row: Host box, Action dropdown (filled from `actionDefinitions.json`) and Go button. Enter and Alt+H / A / G shortcuts. One shared launch routine for list entries and Go. |
 | 2.3.1 | Version resource corrected; `resource.h` cleaned up; COM initialized once on the UI thread; ordinal sort; config files opened with full sharing; URL hosts may be full URLs, and unsafe characters are percent-encoded; first load happens after the window is shown. |
 | 2.3.0 | Hosts with spaces are quoted; duplicate action warning; stable device IDs; single instance; new window title. |

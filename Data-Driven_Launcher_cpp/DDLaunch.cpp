@@ -1,7 +1,21 @@
-// Data-Driven Launcher+ version 2.4.1
+// Data-Driven Launcher+ version 2.5.0
 // C++ (Win32 API)
 // Author: Glenn Madine
 // Release_Date: 11/07/2026
+// Changes in 2.5.0:
+//   - F4: Host box history. The Host box is now an editable dropdown that
+//         remembers the hosts launched with Go (most recent first, up to 25,
+//         no duplicates ignoring case). Only successful launches are added.
+//         Picking a host from the history also selects the action it was last
+//         launched with. Shift+Delete on a highlighted entry in the open list
+//         removes it. The history is saved in settings.json ("hostHistory")
+//         after every change, so it survives restarts.
+// Changes in 2.4.2:
+//   - F3: The Action dropdown is sorted A-Z, ignoring case (CompareStringOrdinal,
+//         the same rule as the list columns). Until an action is chosen, the
+//         first action in actionDefinitions.json is still the one selected.
+//         Typing a letter in the dropdown jumps to the first action that
+//         starts with it.
 // Changes in 2.4.1:
 //   - F2: "Edit actionDefinitions.json" and "Launch RDP connection for host
 //         not in this list" swapped places: Edit actionDefinitions.json is
@@ -178,7 +192,7 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         		L"v2.4.1"
+#define VERSION         		L"v2.5.0"
 #define IDC_LISTVIEW        	1001
 #define IDC_BTN_RDP         	1002
 #define IDC_BTN_EXIT        	1003
@@ -186,7 +200,7 @@
 #define IDC_BTN_EDIT_ACTIONS	1005
 #define IDC_BTN_RUN         	1006
 #define IDC_LBL_HOST        	1007
-#define IDC_EDIT_HOST       	1008
+#define IDC_HOST_BOX       	1008
 #define IDC_LBL_ACTION      	1009
 #define IDC_COMBO_ACTION    	1010
 #define IDC_BTN_GO          	1011
@@ -983,7 +997,7 @@ static HWND      g_hBtnEditConn    = nullptr;
 static HWND      g_hBtnEditActions = nullptr;
 static HWND      g_hBtnRun         = nullptr;
 static HWND      g_hLblHost        = nullptr;  // quick-launch row (F1)
-static HWND      g_hEditHost       = nullptr;
+static HWND      g_hHostBox       = nullptr;
 static HWND      g_hLblAction      = nullptr;
 static HWND      g_hComboAction    = nullptr;
 static HWND      g_hBtnGo          = nullptr;
@@ -1257,32 +1271,48 @@ static std::wstring GetSelectedActionName() {
     return name;
 }
 
-// Fill the dropdown from g_actions, in file order. Each name appears once:
+// Fill the dropdown from g_actions, sorted A-Z (F3). Each name appears once:
 // blank names and later case-insensitive duplicates are skipped, since
-// findAction() only ever uses the first (B13). The previously chosen action
-// stays selected if it still exists; otherwise the first one is selected.
+// findAction() only ever uses the first (B13). Sorting uses the same rule as
+// the list columns and action matching -- CompareStringOrdinal ignoring case
+// (B16) -- so the order doesn't depend on the user's locale.
+// Selection: the previously chosen action if it still exists; otherwise the
+// first action in the file (so the file's first entry stays the default even
+// though it may not be first alphabetically).
 static void PopulateActionCombo() {
     if (!g_hComboAction) {
         return;
     }
     const std::wstring previous = GetSelectedActionName();
 
-    SendMessageW(g_hComboAction, CB_RESETCONTENT, 0, 0);
-    int selIndex = -1;
+    // Unique, non-blank names (first occurrence wins), in file order.
+    std::vector<std::wstring> names;
     for (const Action& a : g_actions) {
-        if (a.action.empty() || findAction(g_actions, a.action) != &a) {
-            continue;
-        }
-        const int idx = static_cast<int>(SendMessageW(g_hComboAction, CB_ADDSTRING, 0,
-                                                      reinterpret_cast<LPARAM>(a.action.c_str())));
-        if (selIndex < 0 && idx >= 0 && !previous.empty() && EqualsIgnoreCase(a.action, previous)) {
-            selIndex = idx;
+        if (!a.action.empty() && findAction(g_actions, a.action) == &a) {
+            names.push_back(a.action);
         }
     }
+    const std::wstring fileDefault = names.empty() ? std::wstring() : names.front();
 
-    const int count = static_cast<int>(SendMessageW(g_hComboAction, CB_GETCOUNT, 0, 0));
-    if (count > 0) {
-        SendMessageW(g_hComboAction, CB_SETCURSEL, selIndex >= 0 ? selIndex : 0, 0);
+    std::sort(names.begin(), names.end(), [](const std::wstring& x, const std::wstring& y) {
+        return CompareStringOrdinal(x.c_str(), static_cast<int>(x.size()),
+                                    y.c_str(), static_cast<int>(y.size()), TRUE) == CSTR_LESS_THAN;
+    });
+
+    SendMessageW(g_hComboAction, CB_RESETCONTENT, 0, 0);
+    int prevIndex = -1, defaultIndex = -1;
+    for (const std::wstring& name : names) {
+        // CB_ADDSTRING appends (no CBS_SORT), so the order above is kept.
+        const int idx = static_cast<int>(SendMessageW(g_hComboAction, CB_ADDSTRING, 0,
+                                                      reinterpret_cast<LPARAM>(name.c_str())));
+        if (idx < 0) continue;
+        if (prevIndex < 0 && !previous.empty() && EqualsIgnoreCase(name, previous)) prevIndex = idx;
+        if (defaultIndex < 0 && name == fileDefault) defaultIndex = idx;
+    }
+
+    if (!names.empty()) {
+        const int sel = prevIndex >= 0 ? prevIndex : (defaultIndex >= 0 ? defaultIndex : 0);
+        SendMessageW(g_hComboAction, CB_SETCURSEL, sel, 0);
     }
 }
 
@@ -1380,21 +1410,26 @@ static void ReloadAllData(HWND hWnd, bool force) {
 // `what` names the target in the error message. Shared by list entries
 // (OnItemActivated) and the Go button (OnGo), so both behave identically:
 // same host quoting (B11), URL rules (B18) and messages (B3).
-static void LaunchWithAction(HWND hWnd, const Action& action, const std::wstring& host,
+// Returns true if the launch succeeded (F4: only those go into the history).
+static bool LaunchWithAction(HWND hWnd, const Action& action, const std::wstring& host,
                              const std::wstring& what) {
     const std::wstring name = ToUpper(action.action);
     if (action.command.empty()) {
         MessageBoxW(hWnd,
             (L"The \"" + name + L"\" action in actionDefinitions.json has an empty \"command\".").c_str(),
             L"DDLaunch+ - No command", MB_ICONWARNING | MB_OK);
-        return;
+        return false;
     }
 
     std::wstring file, params;
     const DWORD err = LaunchSomething(hWnd, action.command, action.args, host, file, params);
     ReportLaunchFailure(hWnd, err, what, file, params,
         L"Check the \"command\" and \"args\" for " + name + L" in actionDefinitions.json.");
+    return err == ERROR_SUCCESS;
 }
+
+// Host box history (F4) -- defined with the settings code further down.
+static void AddHostHistory(HWND hWnd, const std::wstring& host, const std::wstring& action);
 
 static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& actions) {
     if (index < 0 || index >= (int)g_devices.size()) return;
@@ -1437,7 +1472,7 @@ static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& act
 // the Host box. Leading/trailing spaces are trimmed; spaces inside the host
 // are handled by the normal quoting/URL rules.
 static void OnGo(HWND hWnd) {
-    std::wstring host = GetWindowTextString(g_hEditHost);
+    std::wstring host = GetWindowTextString(g_hHostBox);
     const size_t first = host.find_first_not_of(L" \t\r\n");
     host = (first == std::wstring::npos)
                ? std::wstring()
@@ -1447,7 +1482,7 @@ static void OnGo(HWND hWnd) {
         MessageBoxW(hWnd,
             L"Type a host name, IP address or URL in the Host box, then click Go.",
             L"DDLaunch+ - No host", MB_ICONWARNING | MB_OK);
-        SetFocus(g_hEditHost);
+        SetFocus(g_hHostBox);
         return;
     }
 
@@ -1463,8 +1498,10 @@ static void OnGo(HWND hWnd) {
         return;
     }
 
-    LaunchWithAction(hWnd, *action, host,
-                     L"\"" + host + L"\" (action " + ToUpper(action->action) + L")");
+    if (LaunchWithAction(hWnd, *action, host,
+                         L"\"" + host + L"\" (action " + ToUpper(action->action) + L")")) {
+        AddHostHistory(hWnd, host, action->action);  // F4
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1490,7 +1527,9 @@ static int S(int designValue) { return Dpi::Scale(designValue, g_dpi); }
 //
 // settings.json lives next to the other config files:
 //   { "window": { "x": 120, "y": 80, "width": 640, "height": 420,
-//                 "maximized": false } }
+//                 "maximized": false },
+//     "hostHistory": [ { "host": "dc01.ynext.corp", "action": "RDP" }, ... ] }
+// ("hostHistory" is the Host box history, F4 -- see below.)
 // x / y are screen coordinates in physical pixels (top-left of the restored
 // window). width / height are in 96-DPI units so the window keeps the same
 // apparent size when it reopens on a monitor with different scaling. The
@@ -1529,31 +1568,123 @@ static std::optional<WindowSettings> LoadWindowSettings() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Host box history (F4)
+//
+// Hosts launched successfully with Go, most recent first, each with the
+// action it was launched with. Shown in the Host box's dropdown in the same
+// order, so a dropdown index is also an index into g_hostHistory.
+// ---------------------------------------------------------------------------
+struct HostHistoryEntry {
+    std::wstring host;
+    std::wstring action;  // may name an action that no longer exists
+};
+
+static const size_t kMaxHostHistory = 25;
+static std::vector<HostHistoryEntry> g_hostHistory;
+
+// Read "hostHistory" from settings.json. Bad entries are skipped and a
+// missing or corrupt file just means no history -- never an error box.
+static void LoadHostHistory() {
+    g_hostHistory.clear();
+    try {
+        const std::wstring path = GetSettingsJsonPath();
+        if (!FileExists(path)) {
+            return;
+        }
+        const json j = json::parse(ReadFileUtf8(path));
+        const auto it = j.find("hostHistory");
+        if (it == j.end() || !it->is_array()) {
+            return;
+        }
+        for (const json& e : *it) {
+            if (g_hostHistory.size() >= kMaxHostHistory) break;
+            if (!e.is_object() || !e.contains("host") || !e["host"].is_string()) continue;
+            HostHistoryEntry entry;
+            entry.host = Utf8ToWide(e["host"].get<std::string>());
+            if (e.contains("action") && e["action"].is_string()) {
+                entry.action = Utf8ToWide(e["action"].get<std::string>());
+            }
+            const bool dup = std::any_of(g_hostHistory.begin(), g_hostHistory.end(),
+                [&](const HostHistoryEntry& h) { return EqualsIgnoreCase(h.host, entry.host); });
+            if (!entry.host.empty() && !dup) {
+                g_hostHistory.push_back(std::move(entry));
+            }
+        }
+    } catch (const std::exception&) {
+        // keep whatever was read before the error
+    }
+}
+
+// Refill the Host box's dropdown from g_hostHistory, keeping the typed text
+// (CB_RESETCONTENT also clears the edit part of the box).
+static void RefreshHostHistoryCombo() {
+    if (!g_hHostBox) {
+        return;
+    }
+    const std::wstring text = GetWindowTextString(g_hHostBox);
+    SendMessageW(g_hHostBox, CB_RESETCONTENT, 0, 0);
+    for (const HostHistoryEntry& e : g_hostHistory) {
+        SendMessageW(g_hHostBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(e.host.c_str()));
+    }
+    SetWindowTextW(g_hHostBox, text.c_str());
+}
+
+// A history entry was picked (CBN_SELCHANGE): also select the action it was
+// last launched with, if that action still exists.
+static void OnHostHistoryPicked() {
+    const int sel = static_cast<int>(SendMessageW(g_hHostBox, CB_GETCURSEL, 0, 0));
+    if (sel < 0 || sel >= static_cast<int>(g_hostHistory.size())) {
+        return;
+    }
+    const std::wstring& action = g_hostHistory[static_cast<size_t>(sel)].action;
+    if (action.empty() || !g_hComboAction) {
+        return;
+    }
+    // CB_FINDSTRINGEXACT ignores case, like action matching.
+    const LRESULT idx = SendMessageW(g_hComboAction, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
+                                     reinterpret_cast<LPARAM>(action.c_str()));
+    if (idx != CB_ERR) {
+        SendMessageW(g_hComboAction, CB_SETCURSEL, static_cast<WPARAM>(idx), 0);
+    }
+}
+
 // Writes to a temporary file first, then swaps it in, so a crash or power
-// loss mid-write never leaves a truncated settings.json behind.
-static void SaveWindowSettings(HWND hWnd) {
-    if (IsRectEmpty(&g_normalRect)) {
-        return;  // never shown in the restored state; nothing worth saving
-    }
-
-    WINDOWPLACEMENT wp = {};
-    wp.length = sizeof(wp);
-    bool maximized = IsZoomed(hWnd) != FALSE;
-    if (GetWindowPlacement(hWnd, &wp)) {
-        maximized = wp.showCmd == SW_SHOWMAXIMIZED ||
-                    (wp.showCmd == SW_SHOWMINIMIZED && (wp.flags & WPF_RESTORETOMAXIMIZED));
-    }
-
-    const UINT dpi = g_normalRectDpi ? g_normalRectDpi : Dpi::kBase;
+// loss mid-write never leaves a truncated settings.json behind. Saves the
+// window placement (if the window has been shown) and the Host box history.
+static void SaveSettings(HWND hWnd) {
     json j;
-    j["window"] = {
-        { "x",         g_normalRect.left },
-        { "y",         g_normalRect.top },
-        { "width",     MulDiv(g_normalRect.right - g_normalRect.left, Dpi::kBase, dpi) },
-        { "height",    MulDiv(g_normalRect.bottom - g_normalRect.top, Dpi::kBase, dpi) },
-        { "maximized", maximized },
-    };
-    const std::string text = j.dump(4) + "\n";
+
+    if (!IsRectEmpty(&g_normalRect)) {
+        WINDOWPLACEMENT wp = {};
+        wp.length = sizeof(wp);
+        bool maximized = IsZoomed(hWnd) != FALSE;
+        if (GetWindowPlacement(hWnd, &wp)) {
+            maximized = wp.showCmd == SW_SHOWMAXIMIZED ||
+                        (wp.showCmd == SW_SHOWMINIMIZED && (wp.flags & WPF_RESTORETOMAXIMIZED));
+        }
+
+        const UINT dpi = g_normalRectDpi ? g_normalRectDpi : Dpi::kBase;
+        j["window"] = {
+            { "x",         g_normalRect.left },
+            { "y",         g_normalRect.top },
+            { "width",     MulDiv(g_normalRect.right - g_normalRect.left, Dpi::kBase, dpi) },
+            { "height",    MulDiv(g_normalRect.bottom - g_normalRect.top, Dpi::kBase, dpi) },
+            { "maximized", maximized },
+        };
+    }
+
+    std::string text;
+    try {
+        json history = json::array();
+        for (const HostHistoryEntry& e : g_hostHistory) {
+            history.push_back({ { "host", WideToUtf8(e.host) }, { "action", WideToUtf8(e.action) } });
+        }
+        j["hostHistory"] = std::move(history);
+        text = j.dump(4) + "\n";
+    } catch (const std::exception&) {
+        return;  // best effort: never bother the user about settings
+    }
 
     if (!DirectoryExists(GetDataDir())) {
         return;
@@ -1573,6 +1704,44 @@ static void SaveWindowSettings(HWND hWnd) {
     } else {
         DeleteFileW(tmp.c_str());
     }
+}
+
+// Put `host` at the top of the history (removing any older entry for the
+// same host, ignoring case), trim to kMaxHostHistory, refresh the dropdown
+// and save at once, so the history survives even if the app is killed.
+static void AddHostHistory(HWND hWnd, const std::wstring& host, const std::wstring& action) {
+    g_hostHistory.erase(
+        std::remove_if(g_hostHistory.begin(), g_hostHistory.end(),
+                       [&](const HostHistoryEntry& e) { return EqualsIgnoreCase(e.host, host); }),
+        g_hostHistory.end());
+    g_hostHistory.insert(g_hostHistory.begin(), HostHistoryEntry{ host, action });
+    if (g_hostHistory.size() > kMaxHostHistory) {
+        g_hostHistory.resize(kMaxHostHistory);
+    }
+    RefreshHostHistoryCombo();
+    SaveSettings(hWnd);
+}
+
+// Shift+Delete while the Host box's list is open removes the highlighted
+// entry (the same gesture browsers use for their address-bar history).
+// Called from the message loop; returns true if it handled the key.
+static bool HandleHostHistoryDelete(HWND hWnd, const MSG& msg) {
+    if (msg.message != WM_KEYDOWN || msg.wParam != VK_DELETE || !(GetKeyState(VK_SHIFT) & 0x8000) ||
+        !g_hHostBox || (msg.hwnd != g_hHostBox && !IsChild(g_hHostBox, msg.hwnd)) ||
+        !SendMessageW(g_hHostBox, CB_GETDROPPEDSTATE, 0, 0)) {
+        return false;
+    }
+    const int sel = static_cast<int>(SendMessageW(g_hHostBox, CB_GETCURSEL, 0, 0));
+    if (sel < 0 || sel >= static_cast<int>(g_hostHistory.size())) {
+        return false;
+    }
+    const std::wstring text = GetWindowTextString(g_hHostBox);
+    g_hostHistory.erase(g_hostHistory.begin() + sel);
+    SendMessageW(g_hHostBox, CB_DELETESTRING, static_cast<WPARAM>(sel), 0);  // list stays open
+    SendMessageW(g_hHostBox, CB_SETCURSEL, static_cast<WPARAM>(-1), 0);
+    SetWindowTextW(g_hHostBox, text.c_str());
+    SaveSettings(hWnd);
+    return true;
 }
 
 // Remember the window rectangle whenever it is in the restored state, so the
@@ -1638,7 +1807,7 @@ static int ButtonAreaHeight() {
 // re-measure the buttons. Called on WM_CREATE and WM_DPICHANGED.
 static void ApplyDpi(HWND hWnd) {
     HFONT newFont = Dpi::CreateUiFont(g_dpi);
-    const HWND controls[] = { g_hListView, g_hLblHost, g_hEditHost, g_hLblAction,
+    const HWND controls[] = { g_hListView, g_hLblHost, g_hHostBox, g_hLblAction,
                               g_hComboAction, g_hBtnGo, g_hBtnRDP, g_hBtnEditActions,
                               g_hBtnEditConn, g_hBtnRun, g_hBtnExit };
     for (HWND c : controls) {
@@ -1743,14 +1912,16 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         //   [ Edit actionDefinitions.json ] [ Launch RDP ... ]
         //   [ Edit connections.json ]       [ Run... ] [ Exit ]
         g_hLblHost  =CreateLabel(hWnd, L"&Host:", IDC_LBL_HOST, SS_LEFT);
-        g_hEditHost = CreateWindowExW(
-            WS_EX_CLIENTEDGE, L"EDIT", L"",
-            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+        // F4: an editable dropdown (CBS_DROPDOWN) -- type a host, or open
+        // the list for the history of hosts launched with Go.
+        g_hHostBox = CreateWindowExW(
+            0, WC_COMBOBOXW, L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWN | CBS_AUTOHSCROLL,
             0, 0, 0, 0,
-            hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_EDIT_HOST)),
+            hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_HOST_BOX)),
             GetModuleHandleW(nullptr), nullptr);
-        SendMessageW(g_hEditHost, EM_SETLIMITTEXT, 2048, 0);
-        SendMessageW(g_hEditHost, EM_SETCUEBANNER, FALSE,
+        SendMessageW(g_hHostBox, CB_LIMITTEXT, 2048, 0);
+        SendMessageW(g_hHostBox, CB_SETCUEBANNER, 0,
                      reinterpret_cast<LPARAM>(L"host name, IP address or URL"));
 
         g_hLblAction   = CreateLabel(hWnd, L"&Action:", IDC_LBL_ACTION, SS_RIGHT);
@@ -1814,18 +1985,21 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             const int hostW    = (std::max)(S(40), actLblX - S(8) - hostX);
 
             MoveWindow(g_hLblHost,   startX,  row0Y, g_lblHostW,   btnH, TRUE);
-            MoveWindow(g_hEditHost,  hostX,   row0Y, hostW,        btnH, TRUE);
             MoveWindow(g_hLblAction, actLblX, row0Y, g_lblActionW, btnH, TRUE);
 
-            // For a drop-down list the height given is the open list's; the
+            // For a combo box the height given is that of the open list; the
             // closed box's height comes from the font. Center the closed box
-            // on the row.
-            MoveWindow(g_hComboAction, rightX, row0Y, halfW, S(200), TRUE);
-            RECT cb = {};
-            GetWindowRect(g_hComboAction, &cb);
-            const int comboH = cb.bottom - cb.top;
-            SetWindowPos(g_hComboAction, nullptr, rightX, row0Y + (btnH - comboH) / 2, 0, 0,
-                         SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            // on the row. Used for the Host box (F4) and the Action dropdown.
+            auto placeCombo = [&](HWND hCombo, int x, int w) {
+                MoveWindow(hCombo, x, row0Y, w, S(200), TRUE);
+                RECT cb = {};
+                GetWindowRect(hCombo, &cb);
+                const int comboH = cb.bottom - cb.top;
+                SetWindowPos(hCombo, nullptr, x, row0Y + (btnH - comboH) / 2, 0, 0,
+                             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            };
+            placeCombo(g_hHostBox, hostX, hostW);
+            placeCombo(g_hComboAction, rightX, halfW);
 
             MoveWindow(g_hBtnGo, rightX + halfW + gap, row0Y, halfW, btnH, TRUE);
         }
@@ -1883,16 +2057,23 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             // IsDialogMessageW turns Enter into IDOK when the focused control
             // isn't a push button. On the list that means "launch"; in the
             // Host box or the Action dropdown it means "Go" (F1).
+            // (In the Host box, focus is on the combo box's own edit child.)
             const HWND focus = GetFocus();
             if (focus == g_hListView) {
                 ActivateSelection(hWnd);
-            } else if (focus == g_hEditHost || focus == g_hComboAction) {
+            } else if (focus == g_hHostBox || IsChild(g_hHostBox, focus) || focus == g_hComboAction) {
                 OnGo(hWnd);
             }
             break;
         }
         case IDC_BTN_GO:
             OnGo(hWnd);
+            break;
+        case IDC_HOST_BOX:
+            // F4: a host picked from the history brings its last action along.
+            if (HIWORD(wParam) == CBN_SELCHANGE) {
+                OnHostHistoryPicked();
+            }
             break;
         case IDCANCEL:
             // Esc: deliberately ignored so it can't close the launcher.
@@ -1971,12 +2152,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         // Windows is logging off or shutting down; WM_DESTROY may never
         // arrive, so save the window placement now (R8).
         if (wParam) {
-            SaveWindowSettings(hWnd);
+            SaveSettings(hWnd);
         }
         return 0;
 
     case WM_DESTROY:
-        SaveWindowSettings(hWnd);  // R8
+        SaveSettings(hWnd);  // R8
         if (g_hFont) {
             DeleteObject(g_hFont);
             g_hFont = nullptr;
@@ -2070,8 +2251,8 @@ static bool HandleQuickLaunchMnemonic(HWND hWnd, const MSG& msg) {
     }
     switch (towlower(static_cast<wint_t>(msg.wParam))) {
     case L'h':                                     // Host box, text selected
-        SetFocus(g_hEditHost);
-        SendMessageW(g_hEditHost, EM_SETSEL, 0, -1);
+        SetFocus(g_hHostBox);
+        SendMessageW(g_hHostBox, CB_SETEDITSEL, 0, MAKELPARAM(0, -1));
         return true;
     case L'a':                                     // Action dropdown
         SetFocus(g_hComboAction);
@@ -2191,6 +2372,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     // Seed the "normal" rect now: if the window opens maximized and is closed
     // without ever being restored, this is still the size to save.
     GetWindowRect(hWnd, &g_normalRect);
+
+    // F4: Host box history from settings.json.
+    LoadHostHistory();
+    RefreshHostHistoryCombo();
     g_normalRectDpi = g_dpi;
 
     // Reopen maximized if it was closed maximized, unless the shortcut asked
@@ -2218,6 +2403,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0)) {
         if (HandleQuickLaunchMnemonic(hWnd, msg)) {  // F1: Alt+H / Alt+A / Alt+G
+            continue;
+        }
+        if (HandleHostHistoryDelete(hWnd, msg)) {    // F4: Shift+Delete in the history list
             continue;
         }
         if (!IsDialogMessageW(hWnd, &msg)) {
