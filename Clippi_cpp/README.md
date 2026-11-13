@@ -11,6 +11,7 @@ The buttons are defined in a JSON file, so you can add, change or remove message
 - **One click, one message.** Each button copies its text to the clipboard.
 - **Fill-in values.** A message can contain `%XXX%`. Clippi asks for the value first and inserts it.
 - **Pictures in messages.** A message can contain a PNG image (for example, a signature logo). It pastes with the picture into Outlook, Word and Teams, and as text only into plain-text apps.
+- **Paste for you.** The **Paste** button switches back to the window you were working in and pastes the clipboard there, so you don't have to click back and press Ctrl+V.
 - **Always on top.** Keeps the window above all other windows while you work. The choice is remembered.
 - **Edit in place.** The **Edit Clips** button opens the button file in Notepad. When you close Notepad, Clippi reloads the buttons if you saved changes.
 - **Reload without restarting.** Edit the JSON file and press F5.
@@ -107,7 +108,7 @@ To put a picture in a message, convert a PNG file to base64 and place it inside 
 Then paste it into the JSON, for example:
 
 ```json
-"pasteText": "Glenn Madine\\nSomewhere NY USA\\n%IMG:iVBORxxKGgo...%"
+"pasteText": "Glenn Madine\\nSomePlace ST USA\\n%IMG:iVBORwx0KGgo...%"
 ```
 
 Keep pictures small (a few KB). Reducing the PNG to 64 or 256 colors usually shrinks it a lot with no visible difference.
@@ -128,14 +129,24 @@ Text in the rich versions uses Calibri 11 pt. Messages without a picture copy pl
 
 - **Message buttons:** one per JSON entry, all the same width and stretched to fill the window. The window is wide enough for the longest label. If there are too many buttons to fit in 80% of the screen height, they wrap into additional columns.
 - **Always on top:** checkbox, bottom left.
+- **Paste:** button, bottom right. Pastes the clipboard into the window you used before Clippi (see below).
 - **Edit Clips:** button, bottom right. Opens the button file in Notepad (see below).
 - **Exit:** button, bottom right.
 - **Status line:** shows how many buttons loaded, or what was last copied.
+- **About:** blue link at the right end of the status line. Opens the About box with the author, version and date.
 - **Title bar:** "Clippi" and the version number.
 
 ### Prompting for a value
 
 For a button with an `inputBoxTitle`, a small box opens asking for the value. The box remembers the last value you typed for that prompt until Clippi is closed. OK is refused (with a beep) if the box is empty. Cancel copies nothing.
+
+### Pasting with the Paste button
+
+1. Click in the place you want to paste into, such as a chat box, ticket or email.
+2. In Clippi, click a message button to copy it.
+3. Click **Paste**. Clippi switches back to that window and presses Ctrl+V there. The status line shows "Pasted into: <window title>".
+
+Clippi remembers the last window you used before switching to it, ignoring the taskbar, Start menu, desktop and Alt+Tab. You can click several message buttons and press Paste after each one; they all go to the same window until you use a different one. Paste sends whatever is on the clipboard, including anything copied from another program, and the target app receives the picture too if the clip has one.
 
 ### Editing your clips
 
@@ -153,10 +164,11 @@ Clippi also checks the file whenever you switch back to its window. This catches
 | Enter or Space | Press the selected button |
 | F5 | Reload the JSON file |
 | Alt+T | Toggle Always on top |
+| Alt+P | Paste into the last window used |
 | Alt+E | Edit Clips |
 | Alt+X | Exit |
 
-The window's title-bar menu (click the icon or press Alt+Space) also has **Always on Top** and **Reload Buttons**.
+The window's title-bar menu (click the icon or press Alt+Space) also has **Always on Top**, **Reload Buttons** and **About Clippi**.
 
 ### Status messages
 
@@ -165,6 +177,11 @@ The window's title-bar menu (click the icon or press Alt+Space) also has **Alway
 | `N buttons loaded.  F5 = reload` | The file loaded successfully. |
 | `Copied: <button>` | That button's text is on the clipboard. |
 | `Cancelled.` | The prompt was cancelled; nothing was copied. |
+| `Pasted into: <window title>` | Paste sent Ctrl+V to that window. |
+| `Nothing to paste into. Click in the target window first.` | No other window has been used since Clippi started, or it was closed. |
+| `The clipboard is empty.` | There was nothing on the clipboard to paste. |
+| `Could not switch to <window title>.` | Windows didn't allow Clippi to bring that window to the front. |
+| `Paste was blocked by Windows.` | The keystrokes were refused, usually because the target runs as administrator. |
 | `Editing clips... buttons reload when Notepad is closed.` | Edit Clips opened Notepad. |
 | `Clips updated: N buttons loaded.` | The file was changed and the buttons were reloaded. |
 | `Editor closed. No changes.` | Notepad was closed without saving changes. |
@@ -214,9 +231,11 @@ g++ -std=c++17 -O2 -municode -mwindows ClipBoardButtons.cpp res.o -o ClipBoardBu
 
 MinGW ignores the `#pragma comment` lines, so the modern-control manifest is not applied and buttons use the classic Windows look.
 
-### Changing the version
+### Changing the version, author or date
 
-Edit the five `APP_VERSION_*` lines in `resource.h` (the three numbers and the two strings must match) and rebuild. The title bar and the .exe's Properties > Details tab both update.
+Edit the five `APP_VERSION_*` lines in `resource.h` (the three numbers and the two strings must match) and rebuild. The title bar, the About box and the .exe's Properties > Details tab all update.
+
+The About box's author and date come from `APP_AUTHOR_WSTR` and `APP_DATE_WSTR`, also in `resource.h`. Update the date when you release a new version.
 
 ## How the code works
 
@@ -234,16 +253,18 @@ Edit the five `APP_VERSION_*` lines in `resource.h` (the three numbers and the t
 | Images and clipboard | `SplitSegments`, `Base64Decode`, `PngSize`, `BuildRtfClipboard`, `BuildHtmlClipboard`, `CopyToClipboard` | Separates text from `%IMG:%` pictures and places text, RTF and HTML on the clipboard. |
 | Input box | `DialogTemplate`, `InputDlgProc`, `PromptForInput` | Builds the prompt dialog in memory (no dialog resource needed). |
 | Main window | `AppState g`, `LayoutButtons`, `ReloadDefinitions`, `OnButtonClicked` | Creates and arranges controls; handles clicks. |
+| Paste | `OnForegroundChanged`, `ConsiderPasteTarget`, `IsShellWindow`, `PasteIntoTarget` | Tracks the last window used before Clippi and pastes into it. |
 | Edit Clips | `OpenEditor`, `OnEditorExited`, `OnEditorClosed`, `StopWatchingEditor`, `GetFileStamp`, `FileChangedSinceLoad` | Opens the file in Notepad, waits for Notepad to close, and reloads if the file changed. |
+| About | `ShowAbout` | Shows the About box with Clippi's icon, version, author and date (`MessageBoxIndirect`). |
 | Always on top | `LoadTopmostSetting`, `SaveTopmostSetting`, `SetTopmost` | Keeps the checkbox, menu check mark and registry value in sync. |
-| Window procedure | `WndProc` | Creates controls on `WM_CREATE`; routes commands and menu items; handles the editor-closed and file-check messages and `WM_ACTIVATEAPP`. |
+| Window procedure | `WndProc` | Creates controls on `WM_CREATE`; routes commands and menu items; handles the editor-closed and file-check messages and `WM_ACTIVATEAPP`; draws the About link blue with a hand cursor (`WM_CTLCOLORSTATIC`, `WM_SETCURSOR`). |
 | Entry point | `wWinMain` | DPI setup, font and icon, window creation, message loop. |
 
 ### Startup sequence
 
 1. `wWinMain` marks the process DPI-aware, reads the screen DPI and creates the UI font.
 2. The window class is registered with the icon from the resources.
-3. The main window is created. Its `WM_CREATE` handler creates the status line, Edit Clips and Exit buttons, checkbox and menu items.
+3. The main window is created. Its `WM_CREATE` handler creates the status line, Paste, Edit Clips and Exit buttons, checkbox and menu items, and starts tracking the window in front.
 4. `ReloadDefinitions` calls `FindJsonPath` (creating the file on first run), then `LoadDefinitions`, then `LayoutButtons`.
 5. The saved Always-on-top setting is applied.
 6. The message loop runs. It checks the F5 accelerator first, then `IsDialogMessage` for keyboard navigation.
@@ -262,6 +283,7 @@ Edit the five `APP_VERSION_*` lines in `resource.h` (the three numbers and the t
 - **Embedded default file.** `ClipBoardButtons.rc` includes the JSON as an `RCDATA` resource. `CreateDefaultJsonFile` writes it with `CREATE_NEW`, which guarantees an existing file is never overwritten.
 - **DPI.** The process is system-DPI aware and all sizes are scaled from 96 DPI with `Scale()`.
 - **Layout.** The window is not resizable; `LayoutButtons` computes the exact client size and resizes the window to fit after every load.
+- **Paste target.** A `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` hook reports every change of the window in front. `ConsiderPasteTarget` keeps the latest visible window that belongs to another process and isn't part of the Windows shell. **Paste** waits for Alt/Ctrl/Shift/Win to be released (so Alt+P doesn't turn into Ctrl+Alt+V), calls `SetForegroundWindow` on the target, waits until it is in front, then sends Ctrl+V with `SendInput`.
 - **Detecting edits.** When the buttons load, Clippi records the file's last-write time and size. **Edit Clips** starts Notepad with `ShellExecuteEx` and registers a thread-pool wait (`RegisterWaitForSingleObject`) on the Notepad process. When the process exits, the wait callback posts `WM_APP_EDITOR_CLOSED` to the window, which compares the file with the recorded values and reloads if they differ. `WM_ACTIVATEAPP` posts `WM_APP_CHECK_FILE` to run the same check whenever Clippi is reactivated. A file that fails to load is recorded too, so its error is shown once per save rather than on every activation.
 - **Clipboard.** Opening the clipboard is retried up to 10 times, 30 ms apart, in case another app is briefly holding it.
 - **Visual styles.** A `#pragma comment(linker, ...)` manifest dependency enables Common Controls 6 (modern button look) under MSVC.
@@ -272,6 +294,8 @@ Edit the five `APP_VERSION_*` lines in `resource.h` (the three numbers and the t
 |---|---|
 | "JSON error … (line N, column M)" | The file has a syntax error at that position. Common causes are a missing comma between entries, a trailing comma, or an unescaped `"` inside text. |
 | New buttons in a new build don't appear | Your existing file in `Clippi_Storage` is kept. Copy the new entries into it, or delete the file and restart. |
+| Paste goes to the wrong window | Click in the window you want first, then use Clippi. The status line names the window that received the paste. |
+| Paste does nothing in one program | That program may be running as administrator. Windows blocks keystrokes from normal programs to elevated ones; run Clippi as administrator too, or paste with Ctrl+V. |
 | Buttons didn't update after editing | Make sure the file was saved. Switch back to Clippi or press F5 to reload. |
 | Picture doesn't paste | The target is a plain-text field, or the `%IMG:` data isn't a valid PNG (invalid pictures are silently dropped). |
 | Picture pastes as an attachment in Teams | Teams sometimes uploads pasted pictures. This is Teams behavior. |
@@ -285,5 +309,7 @@ Edit the five `APP_VERSION_*` lines in `resource.h` (the three numbers and the t
 - Values typed into prompts are not saved between sessions.
 - The window is scaled for the primary display's DPI; on a second monitor with different scaling it may look slightly blurry.
 - Pictures must be PNG.
+- Paste can't type into programs running as administrator unless Clippi runs as administrator too.
+- Paste pastes at the target window's current cursor position; it can't choose a particular text box.
 - Edit Clips always uses Notepad. The `%IMG:` picture data appears as one very long line there.
 - Esc does not close the window (by design, to avoid accidental exits).

@@ -23,12 +23,17 @@
 //                  extra columns if the list is taller than 80% of the screen.
 //   Always on top  Checkbox (Alt+T) or System menu. Remembered in
 //                  HKCU\Software\ClipBoardButtons\AlwaysOnTop.
+//   Paste          Switches back to the window you used before Clippi and
+//                  presses Ctrl+V there, pasting what's on the clipboard (Alt+P).
 //   Edit Clips     Opens the JSON file in Notepad (Alt+E). When Notepad is
 //                  closed, or when you switch back to Clippi, the buttons are
 //                  reloaded if the file was saved with changes.
 //   Exit           Closes the program (Alt+X).
 //   Status line    Shows how many buttons loaded / what was last copied.
 //   F5             Reloads the JSON file (also System menu > Reload Buttons).
+//   About          Link at the right end of the status line (also System menu >
+//                  About Clippi). Shows the author, version and date, which
+//                  are set in resource.h.
 //   Title bar      "Clippi" plus the version from resource.h.
 //
 // Pure Win32 / C++17, no external libraries.
@@ -71,6 +76,8 @@ constexpr int  IDC_STATUS       = 901;
 constexpr int  IDC_EXIT         = 902;
 constexpr int  IDC_TOPMOST      = 903;
 constexpr int  IDC_EDIT         = 904;
+constexpr int  IDC_PASTE        = 905;
+constexpr int  IDC_ABOUT        = 906;
 constexpr UINT WM_APP_EDITOR_CLOSED = WM_APP + 1; // posted when the editor process exits
 constexpr UINT WM_APP_CHECK_FILE    = WM_APP + 2; // re-check the JSON file for changes
 constexpr wchar_t kRegKey[]     = L"Software\\ClipBoardButtons"; // HKCU, saves "AlwaysOnTop"
@@ -79,6 +86,7 @@ constexpr int  IDC_INPUT_LABEL  = 100;
 constexpr int  IDC_INPUT_EDIT   = 101;
 constexpr UINT IDM_TOPMOST      = 0x0010; // system-menu IDs: < 0xF000, multiples of 16
 constexpr UINT IDM_RELOAD       = 0x0020;
+constexpr UINT IDM_ABOUT        = 0x0030;
 
 constexpr DWORD kMainStyle   = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
 constexpr DWORD kMainExStyle = 0;
@@ -744,6 +752,15 @@ struct AppState {
 
     // "Edit Clips" support
     HWND editButton = nullptr;
+
+    // "Paste" support
+    HWND pasteButton = nullptr;
+    HWND pasteTarget = nullptr;        // last window used before Clippi
+    HWINEVENTHOOK foregroundHook = nullptr;
+
+    // "About" link
+    HWND aboutLink = nullptr;
+    HFONT linkFont = nullptr;          // underlined copy of the UI font
     HANDLE editorProcess = nullptr;    // Notepad process we launched (if still running)
     HANDLE editorWait = nullptr;       // thread-pool wait on that process
     ULONGLONG editorStartTick = 0;
@@ -770,6 +787,8 @@ void LayoutButtons() {
         maxText = std::max(maxText, static_cast<int>(sz.cx));
     }
     SelectObject(dc, oldFont);
+    SIZE linkSz{};
+    GetTextExtentPoint32W(dc, L"About", 5, &linkSz);
     ReleaseDC(g.hwnd, dc);
 
     const int margin  = Scale(10);
@@ -777,8 +796,9 @@ void LayoutButtons() {
     const int btnH    = Scale(30);
     const int lineH   = Scale(18);             // one line of status text
     const int statusH = lineH + Scale(4);      // status line only
-    const int exitW   = Scale(90);
+    const int exitW   = Scale(80);
     const int editW   = Scale(90);
+    const int pasteW  = Scale(80);
     const int checkW  = Scale(130);
 
     // Wrap into extra columns if the list would be taller than ~80% of the screen
@@ -794,7 +814,7 @@ void LayoutButtons() {
     // Message buttons are then stretched so they fill the full width.
     const int labelW  = std::max(Scale(220), maxText + Scale(32));
     const int clientW = std::max(2 * margin + cols * labelW + (cols - 1) * gap,
-                                 2 * margin + checkW + gap + editW + gap + exitW);
+                                 2 * margin + checkW + gap + pasteW + gap + editW + gap + exitW);
     const int btnW    = (clientW - 2 * margin - (cols - 1) * gap) / cols;
 
     for (int i = 0; i < count; ++i) {
@@ -813,17 +833,26 @@ void LayoutButtons() {
     const int exitY    = margin + buttonsH + (rows > 0 ? 2 * gap : 0); // extra space below the list
     const int clientH  = exitY + btnH + margin + statusH;
 
-    // Bottom row: "Always on top" checkbox (left), then "Edit Clips" and "Exit" (right).
-    // Moving each to HWND_BOTTOM in turn puts them last in the Tab order: checkbox, Edit Clips, Exit.
+    // Bottom row: "Always on top" checkbox (left), then "Paste", "Edit Clips" and "Exit" (right).
+    // Moving each to HWND_BOTTOM in turn puts them last in the Tab order:
+    // checkbox, Paste, Edit Clips, Exit.
+    const int exitX  = clientW - margin - exitW;
+    const int editX  = exitX - gap - editW;
+    const int pasteX = editX - gap - pasteW;
     MoveWindow(g.topmostCheck, margin, exitY, checkW, btnH, TRUE);
-    MoveWindow(g.editButton, clientW - margin - exitW - gap - editW, exitY, editW, btnH, TRUE);
-    MoveWindow(g.exitButton, clientW - margin - exitW, exitY, exitW, btnH, TRUE);
+    MoveWindow(g.pasteButton, pasteX, exitY, pasteW, btnH, TRUE);
+    MoveWindow(g.editButton, editX, exitY, editW, btnH, TRUE);
+    MoveWindow(g.exitButton, exitX, exitY, exitW, btnH, TRUE);
     SetWindowPos(g.topmostCheck, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(g.pasteButton, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetWindowPos(g.editButton, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetWindowPos(g.exitButton, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     const int statusY = clientH - statusH;
-    MoveWindow(g.status, margin, statusY, clientW - 2 * margin, lineH, TRUE);
+    // Status line on the left, "About" link at the right end of the same row
+    const int linkW = linkSz.cx + Scale(4);
+    MoveWindow(g.aboutLink, clientW - margin - linkW, statusY, linkW, lineH, TRUE);
+    MoveWindow(g.status, margin, statusY, clientW - 2 * margin - linkW - gap, lineH, TRUE);
 
     RECT rc{ 0, 0, clientW, clientH };
     AdjustWindowRectEx(&rc, kMainStyle, FALSE, kMainExStyle);
@@ -956,6 +985,108 @@ void OnButtonClicked(size_t index) {
         MessageBoxW(g.hwnd, L"Could not copy text to the clipboard.", kAppTitle, MB_OK | MB_ICONWARNING);
 }
 
+// ---- "Paste": paste the clipboard into the window used before Clippi ----
+
+// Windows that should never be the paste target: the taskbar, desktop,
+// Start menu / search and the Alt+Tab switcher.
+bool IsShellWindow(HWND hwnd) {
+    wchar_t cls[64] = {};
+    GetClassNameW(hwnd, cls, ARRAYSIZE(cls));
+    static const wchar_t* kShell[] = {
+        L"Shell_TrayWnd", L"Shell_SecondaryTrayWnd", L"Progman", L"WorkerW",
+        L"Windows.UI.Core.CoreWindow", L"MultitaskingViewFrame", L"TaskSwitcherWnd",
+        L"XamlExplorerHostIslandWindow", L"ForegroundStaging", L"NotifyIconOverflowWindow",
+    };
+    for (const wchar_t* name : kShell)
+        if (wcscmp(cls, name) == 0) return true;
+    return false;
+}
+
+// Remembers hwnd as the paste target if it's a normal window of another program.
+void ConsiderPasteTarget(HWND hwnd) {
+    if (!hwnd || !IsWindowVisible(hwnd) || IsShellWindow(hwnd)) return;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == GetCurrentProcessId()) return; // Clippi itself or its dialogs
+    g.pasteTarget = hwnd;
+}
+
+// Called by Windows whenever a different window comes to the front.
+void CALLBACK OnForegroundChanged(HWINEVENTHOOK, DWORD, HWND hwnd, LONG idObject, LONG, DWORD, DWORD) {
+    if (idObject == OBJID_WINDOW) ConsiderPasteTarget(hwnd);
+}
+
+std::wstring WindowTitle(HWND hwnd) {
+    wchar_t title[256] = {};
+    GetWindowTextW(hwnd, title, ARRAYSIZE(title));
+    return title[0] ? title : L"(untitled window)";
+}
+
+void PasteIntoTarget() {
+    HWND target = g.pasteTarget;
+    if (!target || !IsWindow(target)) {
+        g.pasteTarget = nullptr;
+        SetStatus(L"Nothing to paste into. Click in the target window first.");
+        return;
+    }
+    if (!IsClipboardFormatAvailable(CF_UNICODETEXT) && !IsClipboardFormatAvailable(CF_BITMAP) &&
+        !IsClipboardFormatAvailable(CF_DIB) && !IsClipboardFormatAvailable(CF_HDROP)) {
+        SetStatus(L"The clipboard is empty.");
+        return;
+    }
+
+    // If Alt+P was used, wait until Alt/Ctrl/Shift/Win are released so they
+    // don't combine with the Ctrl+V we send (up to 1 second).
+    for (int i = 0; i < 50; ++i) {
+        if (!(GetAsyncKeyState(VK_MENU) & 0x8000) && !(GetAsyncKeyState(VK_CONTROL) & 0x8000) &&
+            !(GetAsyncKeyState(VK_SHIFT) & 0x8000) && !(GetAsyncKeyState(VK_LWIN) & 0x8000) &&
+            !(GetAsyncKeyState(VK_RWIN) & 0x8000))
+            break;
+        Sleep(20);
+    }
+
+    // Bring the target to the front (Clippi is in front, so Windows allows this)
+    if (IsIconic(target)) ShowWindow(target, SW_RESTORE);
+    SetForegroundWindow(target);
+    for (int i = 0; i < 50 && GetForegroundWindow() == g.hwnd; ++i) Sleep(10);
+    if (GetForegroundWindow() == g.hwnd) {
+        SetStatus(L"Could not switch to " + WindowTitle(target) + L".");
+        return;
+    }
+    Sleep(50); // let the target restore keyboard focus to its text box
+
+    // Ctrl+V
+    INPUT in[4] = {};
+    for (INPUT& i : in) i.type = INPUT_KEYBOARD;
+    in[0].ki.wVk = VK_CONTROL;
+    in[1].ki.wVk = 'V';
+    in[2].ki.wVk = 'V';     in[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    in[3].ki.wVk = VK_CONTROL; in[3].ki.dwFlags = KEYEVENTF_KEYUP;
+    if (SendInput(ARRAYSIZE(in), in, sizeof(INPUT)) != ARRAYSIZE(in)) {
+        SetStatus(L"Paste was blocked by Windows.");
+        return;
+    }
+    SetStatus(L"Pasted into: " + WindowTitle(target));
+}
+
+// ---- About box (opened by the "About" link or System menu > About Clippi) ----
+void ShowAbout() {
+    const wchar_t* text =
+        L"Clippi - Clipboard Buttons\n\n"
+        L"Version:\t" APP_VERSION_WSTR L"\n"
+        L"Author:\t"  APP_AUTHOR_WSTR  L"\n"
+        L"Date:\t"    APP_DATE_WSTR;
+    MSGBOXPARAMSW mp{};
+    mp.cbSize      = sizeof(mp);
+    mp.hwndOwner   = g.hwnd;
+    mp.hInstance   = g.inst;
+    mp.lpszText    = text;
+    mp.lpszCaption = L"About Clippi";
+    mp.dwStyle     = MB_OK | MB_USERICON;
+    mp.lpszIcon    = MAKEINTRESOURCEW(IDI_APPICON); // Clippi.ico
+    MessageBoxIndirectW(&mp);
+}
+
 bool LoadTopmostSetting() {
     DWORD value = 0, size = sizeof(value);
     return RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"AlwaysOnTop", RRF_RT_REG_DWORD,
@@ -1009,6 +1140,32 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                                        g.inst, nullptr);
         SendMessageW(g.editButton, WM_SETFONT, reinterpret_cast<WPARAM>(g.font), FALSE);
 
+        g.pasteButton = CreateWindowExW(0, L"BUTTON", L"&Paste",
+                                        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                        0, 0, 0, 0, hwnd,
+                                        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PASTE)),
+                                        g.inst, nullptr);
+        SendMessageW(g.pasteButton, WM_SETFONT, reinterpret_cast<WPARAM>(g.font), FALSE);
+
+        // Track the window in front so Paste knows where to go. The window that
+        // was in front when Clippi started is the first target.
+        ConsiderPasteTarget(GetForegroundWindow());
+        g.foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, nullptr,
+                                           OnForegroundChanged, 0, 0, WINEVENT_OUTOFCONTEXT);
+
+        // "About" link: a static control drawn like a hyperlink (blue, underlined,
+        // hand cursor). SS_NOTIFY makes it send STN_CLICKED when clicked.
+        LOGFONTW lf{};
+        GetObjectW(g.font, sizeof(lf), &lf);
+        lf.lfUnderline = TRUE;
+        g.linkFont = CreateFontIndirectW(&lf);
+        g.aboutLink = CreateWindowExW(0, L"STATIC", L"About",
+                                      WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_RIGHT | SS_NOPREFIX,
+                                      0, 0, 0, 0, hwnd,
+                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_ABOUT)),
+                                      g.inst, nullptr);
+        SendMessageW(g.aboutLink, WM_SETFONT, reinterpret_cast<WPARAM>(g.linkFont), FALSE);
+
         g.topmostCheck = CreateWindowExW(0, L"BUTTON", L"Always on &top",
                                          WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
                                          0, 0, 0, 0, hwnd,
@@ -1020,6 +1177,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         AppendMenuW(sys, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(sys, MF_STRING, IDM_TOPMOST, L"Always on &Top");
         AppendMenuW(sys, MF_STRING, IDM_RELOAD, L"&Reload Buttons\tF5");
+        AppendMenuW(sys, MF_STRING, IDM_ABOUT, L"&About Clippi...");
 
         ReloadDefinitions();
         SetTopmost(LoadTopmostSetting()); // restore last session's choice
@@ -1030,6 +1188,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (id == IDA_RELOAD) { ReloadDefinitions(); return 0; }
         if (id == IDC_EXIT)   { DestroyWindow(hwnd); return 0; }
         if (id == IDC_EDIT && HIWORD(wp) == BN_CLICKED) { OpenEditor(); return 0; }
+        if (id == IDC_PASTE && HIWORD(wp) == BN_CLICKED) { PasteIntoTarget(); return 0; }
+        if (id == IDC_ABOUT && HIWORD(wp) == STN_CLICKED) { ShowAbout(); return 0; }
         if (id == IDC_TOPMOST && HIWORD(wp) == BN_CLICKED) {
             SetTopmost(SendMessageW(g.topmostCheck, BM_GETCHECK, 0, 0) == BST_CHECKED);
             return 0;
@@ -1044,6 +1204,21 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         switch (wp & 0xFFF0) {
         case IDM_TOPMOST: SetTopmost(!g.topmost); return 0;
         case IDM_RELOAD:  ReloadDefinitions(); return 0;
+        case IDM_ABOUT:   ShowAbout(); return 0;
+        }
+        break;
+    case WM_CTLCOLORSTATIC:
+        if (reinterpret_cast<HWND>(lp) == g.aboutLink) { // draw the About link in link blue
+            HDC dc = reinterpret_cast<HDC>(wp);
+            SetTextColor(dc, RGB(0, 102, 204)); // standard Windows hyperlink blue
+            SetBkMode(dc, TRANSPARENT);
+            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_BTNFACE));
+        }
+        break;
+    case WM_SETCURSOR:
+        if (reinterpret_cast<HWND>(wp) == g.aboutLink) { // hand cursor over the link
+            SetCursor(LoadCursorW(nullptr, IDC_HAND));
+            return TRUE;
         }
         break;
     case WM_APP_EDITOR_CLOSED:
@@ -1059,6 +1234,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetStatus(L"Clips updated: " + std::to_wstring(g.defs.size()) + L" buttons loaded.");
         return 0;
     case WM_DESTROY:
+        if (g.foregroundHook) UnhookWinEvent(g.foregroundHook);
         StopWatchingEditor();
         PostQuitMessage(0);
         return 0;
@@ -1124,5 +1300,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     DestroyAcceleratorTable(hAccel);
     if (g.font) DeleteObject(g.font);
+    if (g.linkFont) DeleteObject(g.linkFont);
     return static_cast<int>(m.wParam);
 }
