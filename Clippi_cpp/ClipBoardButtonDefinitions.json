@@ -1,0 +1,22 @@
+[
+    {
+        "buttonText": "Are you ready",
+		"pasteText": "Are you ready for me to remote into your PC and install %XXX%?\\n\\nNOTE: Please ensure that you close any confidential, controlled, or sensitive information before we establish a support session.",
+        "inputBoxTitle": "Software Name"
+    },
+    {
+        "buttonText": "Click Approve",
+		"pasteText": "In a moment, you will see a popup... click Approve when you see it....",
+        "inputBoxTitle": ""
+    },
+    {
+        "buttonText": "Done",
+		"pasteText": "I have now disconnected. Have a great day!",
+        "inputBoxTitle": ""
+    },
+    {
+        "buttonText": "Signature",
+		"pasteText": "Glenn Madine\\nSoftware Distribution Dept.\\nACME Corp.\\nacme.com / glenn.madine@acme.com\\nSomewhare NY USA\\n%IMG:iVBORw0KGgoA...==%",
+        "inputBoxTitle": ""
+    }
+]
