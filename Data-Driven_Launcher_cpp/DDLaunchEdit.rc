@@ -1,0 +1,41 @@
+// DDLaunchEdit.rc -- resources for DDLaunch+ Editor v1.0.1
+//
+// Build:  rc /nologo DDLaunchEdit.rc      (produces DDLaunchEdit.res)
+// Then link DDLaunchEdit.res with /MANIFEST:NO (see DDLaunchEdit.cpp header).
+
+#include <windows.h>
+#include "resource.h"
+
+// Same icon as DDLaunch+ (IDI_ICON1 in resource.h).
+IDI_ICON1 ICON "DDLaunch.ico"
+
+// Application manifest -- the only manifest source for the .exe.
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "DDLaunchEdit.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION     1,0,1,0
+ PRODUCTVERSION  1,0,1,0
+ FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+ FILEFLAGS       0x0L
+ FILEOS          VOS_NT_WINDOWS32
+ FILETYPE        VFT_APP
+ FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Glenn Madine"
+            VALUE "FileDescription",  "DDLaunch+ Editor - edits connections.json and actionDefinitions.json"
+            VALUE "FileVersion",      "1.0.1.0"
+            VALUE "InternalName",     "DDLaunchEdit"
+            VALUE "OriginalFilename", "DDLaunchEdit.exe"
+            VALUE "ProductName",      "DDLaunch+"
+            VALUE "ProductVersion",   "1.0.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

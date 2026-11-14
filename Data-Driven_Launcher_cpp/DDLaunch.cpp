@@ -1,7 +1,19 @@
-// Data-Driven Launcher+ version 2.5.0
+// Data-Driven Launcher+ version 2.6.1
 // C++ (Win32 API)
 // Author: Glenn Madine
-// Release_Date: 11/07/2026
+// Release_Date: 11/14/2026
+// Changes in 2.6.1:
+//   - F6: "About" link under the buttons (bottom left). Clicking it, or
+//         pressing Enter on it, opens an About box with the version, author,
+//         release date and whether the DDLaunch+ Editor is
+//         installed. It is a SysLink control (Common Controls v6); without
+//         the manifest a plain clickable label is used instead.
+// Changes in 2.6.0:
+//   - F5: The "Edit connections.json" and "Edit actionDefinitions.json"
+//         buttons open the DDLaunch+ Editor (DDLaunchEdit.exe) on the matching
+//         tab when it is in the same folder as DDLaunch.exe. Without it (or
+//         if it can't be started) they open Notepad as before. Changes saved
+//         in the editor are picked up when you switch back to DDLaunch+.
 // Changes in 2.5.0:
 //   - F4: Host box history. The Host box is now an editable dropdown that
 //         remembers the hosts launched with Go (most recent first, up to 25,
@@ -192,7 +204,7 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         		L"v2.5.0"
+#define VERSION         		L"v2.6.1"
 #define IDC_LISTVIEW        	1001
 #define IDC_BTN_RDP         	1002
 #define IDC_BTN_EXIT        	1003
@@ -204,6 +216,11 @@
 #define IDC_LBL_ACTION      	1009
 #define IDC_COMBO_ACTION    	1010
 #define IDC_BTN_GO          	1011
+#define IDC_LINK_ABOUT      	1012
+
+// Shown in the About box (F6). Keep in step with the header and DDLaunch.rc.
+#define APP_AUTHOR          	L"Glenn Madine"
+#define APP_RELEASE_DATE    	L"11/14/2026"
 #define WM_LAUNCH				(WM_USER + 1)
 
 // Column indices
@@ -582,16 +599,30 @@ static bool EnsureDataFiles(HWND hWnd) {
 }
 
 // ---------------------------------------------------------------------------
-// Open a config file for editing in Notepad.
+// Open a config file for editing.
 //
-// Launches Notepad directly (rather than ShellExecute's "open" verb) so this
-// always works even if .json has no file association or is associated with
-// something other than a text editor. EnsureDataFiles() runs first so the
-// folder and file exist (with valid default JSON) even if the user deleted
-// them while the app was running.
+// F5: if DDLaunchEdit.exe (the DDLaunch+ Editor) is in the same folder as
+// DDLaunch.exe, it is started on the matching tab (`editorTab` is
+// L"/connections" or L"/actions"); a running editor just switches to that tab.
+// Otherwise -- or if it can't be started -- the file opens in Notepad as
+// before. Notepad is launched directly (rather than ShellExecute's "open"
+// verb on the .json) so this works even if .json has no file association or
+// is associated with something other than a text editor. EnsureDataFiles()
+// runs first so the folder and file exist (with valid default JSON) even if
+// the user deleted them while the app was running.
 // ---------------------------------------------------------------------------
-static void OpenJsonFileForEditing(HWND hWnd, const std::wstring& path) {
+static void OpenJsonFileForEditing(HWND hWnd, const std::wstring& path, const wchar_t* editorTab) {
     EnsureDataFiles(hWnd);
+
+    const std::wstring exeDir = GetExeDir();
+    const std::wstring editor = exeDir + L"\\DDLaunchEdit.exe";
+    if (FileExists(editor)) {
+        HINSTANCE r = ShellExecuteW(hWnd, L"open", editor.c_str(), editorTab, exeDir.c_str(), SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(r) > 32) {
+            return;
+        }
+        // Couldn't start the editor: fall back to Notepad below.
+    }
 
     // Quote the path: it is under %USERPROFILE%, which often contains spaces
     // (e.g. C:\Users\First Last\DDLaunch\connections.json).
@@ -1001,6 +1032,7 @@ static HWND      g_hHostBox       = nullptr;
 static HWND      g_hLblAction      = nullptr;
 static HWND      g_hComboAction    = nullptr;
 static HWND      g_hBtnGo          = nullptr;
+static HWND      g_hLinkAbout      = nullptr;  // "About" link (F6)
 static int       g_lblHostW        = 0;        // label widths in pixels (fit text)
 static int       g_lblActionW      = 0;
 static HWND      g_hLastFocus      = nullptr;  // restored when re-activated
@@ -1518,6 +1550,7 @@ const int MIN_LIST_H  = 80;   // smallest list height allowed by resizing
 const int COL_W[3]    = { 200, 100, 300 };  // initial column widths
 const int WINDOW_W    = 600;  // initial window size
 const int WINDOW_H    = 400;
+const int LINK_H      = 20;   // "About" link row under the buttons (F6)
 }
 
 static int S(int designValue) { return Dpi::Scale(designValue, g_dpi); }
@@ -1797,10 +1830,11 @@ static int MeasureTextWidth(HWND hWnd, const wchar_t* text) {
     return width;
 }
 
-// Height of everything below the list: the quick-launch row (F1) and the
-// two button rows, with gaps between them and a margin above and below.
+// Height of everything below the list: the quick-launch row (F1), the two
+// button rows and the About link row (F6), with gaps between them and a
+// margin above and below.
 static int ButtonAreaHeight() {
-    return S(Layout::BTN_H) * 3 + S(Layout::ROW_GAP) * 2 + S(Layout::MARGIN) * 2;
+    return S(Layout::BTN_H) * 3 + S(Layout::ROW_GAP) * 2 + S(Layout::LINK_H) + S(Layout::MARGIN) * 2;
 }
 
 // Apply the current DPI: (re)create the font, set it on every control and
@@ -1809,7 +1843,7 @@ static void ApplyDpi(HWND hWnd) {
     HFONT newFont = Dpi::CreateUiFont(g_dpi);
     const HWND controls[] = { g_hListView, g_hLblHost, g_hHostBox, g_hLblAction,
                               g_hComboAction, g_hBtnGo, g_hBtnRDP, g_hBtnEditActions,
-                              g_hBtnEditConn, g_hBtnRun, g_hBtnExit };
+                              g_hBtnEditConn, g_hBtnRun, g_hBtnExit, g_hLinkAbout };
     for (HWND c : controls) {
         if (c) {
             SendMessageW(c, WM_SETFONT,
@@ -1873,6 +1907,53 @@ static void RescaleForDpi(HWND hWnd, UINT newDpi) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// About link and About box (F6)
+// ---------------------------------------------------------------------------
+
+// A SysLink control showing "About" as a link. SysLink needs Common Controls
+// v6 (the manifest); if it can't be created, a clickable label (SS_NOTIFY,
+// reported as STN_CLICKED) is used instead so the About box is still reachable.
+static HWND CreateAboutLink(HWND hWnd, int id) {
+    HWND h = CreateWindowExW(0, WC_LINK, L"<a>About</a>", WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                             0, 0, 0, 0, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                             GetModuleHandleW(nullptr), nullptr);
+    if (!h) {
+        h = CreateWindowExW(0, L"STATIC", L"About", WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+                            0, 0, 0, 0, hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                            GetModuleHandleW(nullptr), nullptr);
+    }
+    return h;
+}
+
+// Version, author and release date, plus whether the editor is installed.
+static void ShowAboutBox(HWND hWnd) {
+    const bool editorFound = FileExists(GetExeDir() + L"\\DDLaunchEdit.exe");
+    wchar_t jsonVer[32];
+    swprintf_s(jsonVer, L"%d.%d.%d", NLOHMANN_JSON_VERSION_MAJOR, NLOHMANN_JSON_VERSION_MINOR,
+               NLOHMANN_JSON_VERSION_PATCH);
+
+    const std::wstring text =
+        std::wstring(L"DDLaunch+ ") + VERSION + L"\n"
+        L"Data-Driven Launcher\n\n"
+        L"Author:  " APP_AUTHOR L"\n"
+        L"Release date:  " APP_RELEASE_DATE L"\n"
+        L"Version:  " + std::wstring(VERSION).substr(1) + L"\n\n"
+        L"Editor:  " + (editorFound ? L"DDLaunchEdit.exe (Edit buttons open it)"
+                                    : L"not installed (Edit buttons open Notepad)") + L"\n\n"
+        L"Win32 C++ · nlohmann/json " + jsonVer;
+
+    MSGBOXPARAMSW mbp = {};
+    mbp.cbSize = sizeof(mbp);
+    mbp.hwndOwner = hWnd;
+    mbp.hInstance = GetModuleHandleW(nullptr);
+    mbp.lpszText = text.c_str();
+    mbp.lpszCaption = L"About DDLaunch+";
+    mbp.dwStyle = MB_OK | MB_USERICON;
+    mbp.lpszIcon = MAKEINTRESOURCEW(IDI_ICON1);  // the application icon
+    MessageBoxIndirectW(&mbp);
+}
+
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
     case WM_CREATE: {
@@ -1933,11 +2014,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             GetModuleHandleW(nullptr), nullptr);
 
         g_hBtnGo          = CreateButton(hWnd, L"&Go", IDC_BTN_GO);
-        g_hBtnEditActions = CreateButton(hWnd, L"Edit actionDefinitions.json", IDC_BTN_EDIT_ACTIONS);
+        g_hBtnEditActions = CreateButton(hWnd, L"Edit Actions", IDC_BTN_EDIT_ACTIONS);
         g_hBtnRDP         = CreateButton(hWnd, L"Launch RDP connection for host not in this list", IDC_BTN_RDP);
-        g_hBtnEditConn    = CreateButton(hWnd, L"Edit connections.json", IDC_BTN_EDIT_CONN);
+        g_hBtnEditConn    = CreateButton(hWnd, L"Edit Connections", IDC_BTN_EDIT_CONN);
         g_hBtnRun         = CreateButton(hWnd, L"Run...", IDC_BTN_RUN);
         g_hBtnExit        = CreateButton(hWnd, L"Exit", IDC_BTN_EXIT);
+        g_hLinkAbout      = CreateAboutLink(hWnd, IDC_LINK_ABOUT);  // F6 (last in Tab order)
 
         // DPI-correct font on every control, and button width to fit text
         ApplyDpi(hWnd);
@@ -1968,7 +2050,8 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         const int totalW = btnW * 2 + gap;
         const int startX = (rc.right - totalW) / 2;
         const int rightX = startX + btnW + gap;
-        const int row2Y  = rc.bottom - btnH - margin;
+        const int linkH  = S(Layout::LINK_H);
+        const int row2Y  = rc.bottom - margin - linkH - btnH;
         const int row1Y  = row2Y - rowGap - btnH;
         const int row0Y  = row1Y - rowGap - btnH;
         // Run/Exit (and the dropdown/Go above them) split the right-hand slot
@@ -2012,6 +2095,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         MoveWindow(g_hBtnEditConn, startX,               row2Y, btnW,  btnH, TRUE);
         MoveWindow(g_hBtnRun,      rightX,               row2Y, halfW, btnH, TRUE);
         MoveWindow(g_hBtnExit,     rightX + halfW + gap, row2Y, halfW, btnH, TRUE);
+
+        // About link (F6): under the bottom row, lined up with its left edge.
+        MoveWindow(g_hLinkAbout, startX, row2Y + btnH + S(3),
+                   MeasureTextWidth(hWnd, L"About") + S(6), linkH - S(3), TRUE);
 
         return 0;
     }
@@ -2069,6 +2156,12 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         case IDC_BTN_GO:
             OnGo(hWnd);
             break;
+        case IDC_LINK_ABOUT:
+            // Fallback label (no Common Controls v6) reports clicks this way.
+            if (HIWORD(wParam) == STN_CLICKED) {
+                ShowAboutBox(hWnd);
+            }
+            break;
         case IDC_HOST_BOX:
             // F4: a host picked from the history brings its last action along.
             if (HIWORD(wParam) == CBN_SELCHANGE) {
@@ -2089,10 +2182,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             DestroyWindow(hWnd);
             break;
         case IDC_BTN_EDIT_CONN:
-            OpenJsonFileForEditing(hWnd, GetConnectionsJsonPath());
+            OpenJsonFileForEditing(hWnd, GetConnectionsJsonPath(), L"/connections");
             break;
         case IDC_BTN_EDIT_ACTIONS:
-            OpenJsonFileForEditing(hWnd, GetActionsJsonPath());
+            OpenJsonFileForEditing(hWnd, GetActionsJsonPath(), L"/actions");
             break;
         }
         return 0;
@@ -2100,6 +2193,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_NOTIFY: {
         LPNMHDR pnmh = reinterpret_cast<LPNMHDR>(lParam);
+        // F6: About link clicked, or Enter pressed while it has focus.
+        if (pnmh->idFrom == IDC_LINK_ABOUT && (pnmh->code == NM_CLICK || pnmh->code == NM_RETURN)) {
+            ShowAboutBox(hWnd);
+            return 0;
+        }
         if (pnmh->idFrom == IDC_LISTVIEW) {
             // NM_RETURN only arrives if the list itself handles Enter; with
             // IsDialogMessageW it normally comes through IDOK instead. A key
@@ -2288,7 +2386,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
 
     // Common Controls v6 (visual styles) -- requires DDLaunch.manifest to be
     // embedded via DDLaunch.rc.
-    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES };
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_LINK_CLASS };
     InitCommonControlsEx(&icc);
     CheckCommonControlsVersion();
 
