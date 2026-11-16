@@ -1,7 +1,19 @@
-// Data-Driven Launcher+ version 2.6.1
+// Data-Driven Launcher+ version 2.7.0
 // C++ (Win32 API)
 // Author: Glenn Madine
-// Release_Date: 11/14/2026
+// Release_Date: 11/15/2026
+// Changes in 2.7.0:
+//   - F7: Group tree. When connections.json uses named groups
+//         ({ "RDP connections": [ ... ], "SSH connections": [ ... ] }), a tree
+//         on the left lists "All connections" and each group with its count,
+//         in file order. Selecting a group (click or arrow keys) shows only
+//         its entries; sorting, selection and launching work as before. The
+//         tree is hidden for a flat-array file. connections.json is now read
+//         with ordered_json, so groups -- and the unsorted list -- follow the
+//         file's order (before, groups came out A-Z). Drag the bar between the tree
+//         and the list to resize it; the width and the selected group are
+//         saved in settings.json ("treeWidth", "group"). Enter in the tree
+//         moves to the list.
 // Changes in 2.6.1:
 //   - F6: "About" link under the buttons (bottom left). Clicking it, or
 //         pressing Enter on it, opens an About box with the version, author,
@@ -204,7 +216,7 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         		L"v2.6.1"
+#define VERSION         		L"v2.7.0"
 #define IDC_LISTVIEW        	1001
 #define IDC_BTN_RDP         	1002
 #define IDC_BTN_EXIT        	1003
@@ -217,10 +229,11 @@
 #define IDC_COMBO_ACTION    	1010
 #define IDC_BTN_GO          	1011
 #define IDC_LINK_ABOUT      	1012
+#define IDC_GROUP_TREE      	1013
 
 // Shown in the About box (F6). Keep in step with the header and DDLaunch.rc.
 #define APP_AUTHOR          	L"Glenn Madine"
-#define APP_RELEASE_DATE    	L"11/14/2026"
+#define APP_RELEASE_DATE    	L"11/15/2026"
 #define WM_LAUNCH				(WM_USER + 1)
 
 // Column indices
@@ -366,6 +379,8 @@ struct Device {
     std::wstring host;
     std::wstring type;
     std::wstring description;
+    std::wstring group;         // group name (object key) in a grouped file, else L"" (F7)
+    int          fileIndex = 0; // position in the file, to list groups in file order (F7)
     UINT_PTR     id = 0;  // stable ID, stored in the list row's lParam (B14)
 };
 
@@ -411,11 +426,15 @@ static std::optional<std::vector<Device>> LoadConnections(HWND hOwner, const std
     }
 
     try {
-        nlohmann::json data = nlohmann::json::parse(contents);
+        // F7: ordered_json keeps the groups in file order (nlohmann::json
+        // would sort the object keys A-Z), for the tree and the unsorted list.
+        nlohmann::ordered_json data = nlohmann::ordered_json::parse(contents);
 
-        auto parseDevice = [&](const nlohmann::json& obj) {
+        auto parseDevice = [&](const nlohmann::ordered_json& obj, const std::wstring& group) {
             if (!obj.is_object()) return;
             Device d;
+            d.group = group;                                   // F7
+            d.fileIndex = static_cast<int>(devices.size());
             if (obj.contains("host")    && obj["host"].is_string())
                 d.host    = Utf8ToWide(obj["host"].get<std::string>());
             if (obj.contains("type")    && obj["type"].is_string())
@@ -426,12 +445,14 @@ static std::optional<std::vector<Device>> LoadConnections(HWND hOwner, const std
         };
 
         if (data.is_object()) {
+            // Each key is a group name (F7), e.g. "RDP connections".
             for (auto& [key, val] : data.items()) {
-                if (val.is_object())      parseDevice(val);
-                else if (val.is_array())  for (auto& item : val) parseDevice(item);
+                const std::wstring group = Utf8ToWide(key);
+                if (val.is_object())      parseDevice(val, group);
+                else if (val.is_array())  for (auto& item : val) parseDevice(item, group);
             }
         } else if (data.is_array()) {
-            for (auto& item : data) parseDevice(item);
+            for (auto& item : data) parseDevice(item, std::wstring());
         }
 
     } catch (const std::exception& e) {
@@ -1033,6 +1054,14 @@ static HWND      g_hLblAction      = nullptr;
 static HWND      g_hComboAction    = nullptr;
 static HWND      g_hBtnGo          = nullptr;
 static HWND      g_hLinkAbout      = nullptr;  // "About" link (F6)
+
+// Group tree (F7)
+static HWND      g_hGroupTree      = nullptr;
+static std::optional<std::wstring> g_selGroup;  // group shown in the list; nullopt = all
+static int       g_treeW96         = 190;      // tree width in 96-DPI units (saved)
+static int       g_treePx          = 0;        // current tree width in pixels (0 = hidden)
+static bool      g_buildingTree    = false;    // ignore selection notifications while refilling
+static bool      g_splitDrag       = false;    // dragging the bar between tree and list
 static int       g_lblHostW        = 0;        // label widths in pixels (fit text)
 static int       g_lblActionW      = 0;
 static HWND      g_hLastFocus      = nullptr;  // restored when re-activated
@@ -1177,21 +1206,24 @@ static void PopulateListView(HWND hLV) {
     ListView_DeleteAllItems(hLV);
 
     int newSel = -1;
+    int row = 0;
     for (int i = 0; i < (int)g_devices.size(); ++i) {
         const Device& d = g_devices[i];
+        if (g_selGroup && d.group != *g_selGroup) continue;  // F7: only the selected group
 
         LVITEMW lvi = {};
         lvi.mask     = LVIF_TEXT | LVIF_PARAM;
-        lvi.iItem    = i;
+        lvi.iItem    = row;
         lvi.iSubItem = 0;
         lvi.pszText  = const_cast<LPWSTR>(d.host.c_str());
         lvi.lParam   = static_cast<LPARAM>(d.id);
         ListView_InsertItem(hLV, &lvi);
 
-        ListView_SetItemText(hLV, i, COL_TYPE,        const_cast<LPWSTR>(d.type.c_str()));
-        ListView_SetItemText(hLV, i, COL_DESCRIPTION, const_cast<LPWSTR>(d.description.c_str()));
+        ListView_SetItemText(hLV, row, COL_TYPE,        const_cast<LPWSTR>(d.type.c_str()));
+        ListView_SetItemText(hLV, row, COL_DESCRIPTION, const_cast<LPWSTR>(d.description.c_str()));
 
-        if (selId != 0 && d.id == selId) newSel = i;
+        if (selId != 0 && d.id == selId) newSel = row;
+        ++row;
     }
 
     // 3. Restore the selection.
@@ -1203,6 +1235,90 @@ static void PopulateListView(HWND hLV) {
 
     SendMessageW(hLV, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(hLV, nullptr, TRUE);
+}
+
+// ---------------------------------------------------------------------------
+// Group tree (F7)
+//
+// "All connections (N)" with one child per group, "<group> (count)", in the
+// order the groups appear in connections.json. Item lParam: 0 = all, k = the
+// k-th group (1-based) in g_groupNames. Shown only if any entry has a group.
+// ---------------------------------------------------------------------------
+static std::vector<std::wstring> g_groupNames;
+
+static void RebuildGroupTree() {
+    if (!g_hGroupTree) return;
+
+    // Groups in file order, with counts.
+    struct G { std::wstring name; int first; int count; };
+    std::vector<G> groups;
+    for (const Device& d : g_devices) {
+        if (d.group.empty()) continue;
+        auto it = std::find_if(groups.begin(), groups.end(), [&](const G& g) { return g.name == d.group; });
+        if (it == groups.end()) groups.push_back({ d.group, d.fileIndex, 1 });
+        else { ++it->count; it->first = (std::min)(it->first, d.fileIndex); }
+    }
+    std::sort(groups.begin(), groups.end(), [](const G& a, const G& b) { return a.first < b.first; });
+
+    const bool wasShown = g_treePx > 0 || IsWindowVisible(g_hGroupTree);
+    g_buildingTree = true;
+    SendMessageW(g_hGroupTree, WM_SETREDRAW, FALSE, 0);
+    TreeView_DeleteAllItems(g_hGroupTree);
+    g_groupNames.clear();
+
+    if (groups.empty()) {
+        // Flat file: no tree, the list shows everything.
+        g_selGroup.reset();
+        SendMessageW(g_hGroupTree, WM_SETREDRAW, TRUE, 0);
+        g_buildingTree = false;
+        ShowWindow(g_hGroupTree, SW_HIDE);
+        if (wasShown) SendMessageW(GetParent(g_hGroupTree), WM_SIZE, 0, 0);
+        return;
+    }
+
+    auto insert = [&](HTREEITEM parent, const std::wstring& text, LPARAM param) {
+        TVINSERTSTRUCTW tvi = {};
+        tvi.hParent = parent;
+        tvi.hInsertAfter = TVI_LAST;
+        tvi.item.mask = TVIF_TEXT | TVIF_PARAM;
+        tvi.item.pszText = const_cast<LPWSTR>(text.c_str());
+        tvi.item.lParam = param;
+        return TreeView_InsertItem(g_hGroupTree, &tvi);
+    };
+
+    HTREEITEM all = insert(TVI_ROOT, L"All connections (" + std::to_wstring(g_devices.size()) + L")", 0);
+    HTREEITEM toSelect = all;
+    for (size_t k = 0; k < groups.size(); ++k) {
+        g_groupNames.push_back(groups[k].name);
+        HTREEITEM h = insert(all, groups[k].name + L" (" + std::to_wstring(groups[k].count) + L")",
+                             static_cast<LPARAM>(k + 1));
+        if (g_selGroup && *g_selGroup == groups[k].name) toSelect = h;
+    }
+    if (toSelect == all) g_selGroup.reset();  // the remembered group no longer exists
+    TreeView_Expand(g_hGroupTree, all, TVE_EXPAND);
+    TreeView_SelectItem(g_hGroupTree, toSelect);
+    TreeView_EnsureVisible(g_hGroupTree, toSelect);
+
+    SendMessageW(g_hGroupTree, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_hGroupTree, nullptr, TRUE);
+    g_buildingTree = false;
+
+    if (!IsWindowVisible(g_hGroupTree)) {
+        ShowWindow(g_hGroupTree, SW_SHOW);
+        SendMessageW(GetParent(g_hGroupTree), WM_SIZE, 0, 0);  // make room for it
+    }
+}
+
+// The user picked a tree item: show that group (or all) in the list.
+static void OnGroupTreeSelChanged(const NMTREEVIEWW* nm) {
+    if (g_buildingTree) return;
+    const LPARAM k = nm->itemNew.lParam;
+    if (k >= 1 && static_cast<size_t>(k) <= g_groupNames.size()) {
+        g_selGroup = g_groupNames[static_cast<size_t>(k - 1)];
+    } else {
+        g_selGroup.reset();
+    }
+    PopulateListView(g_hListView);
 }
 
 // ---------------------------------------------------------------------------
@@ -1434,6 +1550,7 @@ static void ReloadAllData(HWND hWnd, bool force) {
 
     // Actions don't appear in the list, so only repaint when devices changed.
     if (devicesChanged && g_hListView) {
+        RebuildGroupTree();  // F7: groups and counts; may reset a vanished group
         PopulateListView(g_hListView);
     }
 }
@@ -1548,9 +1665,12 @@ const int MARGIN      = 6;    // margin around the button area
 const int ROW_GAP     = 6;    // gap between the two button rows
 const int MIN_LIST_H  = 80;   // smallest list height allowed by resizing
 const int COL_W[3]    = { 200, 100, 300 };  // initial column widths
-const int WINDOW_W    = 600;  // initial window size
+const int WINDOW_W    = 780;  // initial window size (wide enough for the group tree, F7)
 const int WINDOW_H    = 400;
 const int LINK_H      = 20;   // "About" link row under the buttons (F6)
+const int SPLIT_W     = 5;    // draggable bar between the group tree and the list (F7)
+const int TREE_MIN_W  = 100;  // narrowest group tree
+const int LIST_MIN_W  = 240;  // the list keeps at least this much width
 }
 
 static int S(int designValue) { return Dpi::Scale(designValue, g_dpi); }
@@ -1615,6 +1735,25 @@ struct HostHistoryEntry {
 
 static const size_t kMaxHostHistory = 25;
 static std::vector<HostHistoryEntry> g_hostHistory;
+
+// F7: group tree width ("treeWidth", 96-DPI units) and the selected group
+// ("group"; absent = all) from settings.json. Bad values are ignored.
+static void LoadTreeSettings() {
+    try {
+        const std::wstring path = GetSettingsJsonPath();
+        if (!FileExists(path)) return;
+        const json j = json::parse(ReadFileUtf8(path));
+        if (j.contains("treeWidth") && j["treeWidth"].is_number_integer()) {
+            const int w = j["treeWidth"].get<int>();
+            if (w >= 80 && w <= 2000) g_treeW96 = w;
+        }
+        if (j.contains("group") && j["group"].is_string()) {
+            g_selGroup = Utf8ToWide(j["group"].get<std::string>());
+        }
+    } catch (const std::exception&) {
+        // keep the defaults
+    }
+}
 
 // Read "hostHistory" from settings.json. Bad entries are skipped and a
 // missing or corrupt file just means no history -- never an error box.
@@ -1714,6 +1853,8 @@ static void SaveSettings(HWND hWnd) {
             history.push_back({ { "host", WideToUtf8(e.host) }, { "action", WideToUtf8(e.action) } });
         }
         j["hostHistory"] = std::move(history);
+        j["treeWidth"] = g_treeW96;                         // F7
+        if (g_selGroup) j["group"] = WideToUtf8(*g_selGroup);
         text = j.dump(4) + "\n";
     } catch (const std::exception&) {
         return;  // best effort: never bother the user about settings
@@ -1841,7 +1982,7 @@ static int ButtonAreaHeight() {
 // re-measure the buttons. Called on WM_CREATE and WM_DPICHANGED.
 static void ApplyDpi(HWND hWnd) {
     HFONT newFont = Dpi::CreateUiFont(g_dpi);
-    const HWND controls[] = { g_hListView, g_hLblHost, g_hHostBox, g_hLblAction,
+    const HWND controls[] = { g_hGroupTree, g_hListView, g_hLblHost, g_hHostBox, g_hLblAction,
                               g_hComboAction, g_hBtnGo, g_hBtnRDP, g_hBtnEditActions,
                               g_hBtnEditConn, g_hBtnRun, g_hBtnExit, g_hLinkAbout };
     for (HWND c : controls) {
@@ -1959,6 +2100,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_CREATE: {
         g_dpi = Dpi::ForWindow(hWnd);
 
+        // F7: group tree, left of the list. Created first so it is first in
+        // the Tab order; hidden until connections.json turns out to use groups.
+        g_hGroupTree = CreateWindowExW(
+            WS_EX_CLIENTEDGE, WC_TREEVIEWW, L"",
+            WS_CHILD | WS_TABSTOP | TVS_HASLINES | TVS_HASBUTTONS | TVS_LINESATROOT | TVS_SHOWSELALWAYS,
+            0, 0, 0, 0,
+            hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_GROUP_TREE)), GetModuleHandleW(nullptr), nullptr);
+
         // Create ListView (WS_TABSTOP so Tab can reach it)
         g_hListView = CreateWindowExW(
             WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
@@ -2044,8 +2193,19 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         const int margin = S(Layout::MARGIN);
         const int rowGap = S(Layout::ROW_GAP);
 
-        // ListView fills everything above the two button rows
-        MoveWindow(g_hListView, 0, 0, rc.right, rc.bottom - ButtonAreaHeight(), TRUE);
+        // ListView fills everything above the button area -- to the right of
+        // the group tree (F7) when that is shown, with a draggable bar between.
+        const int listH = (std::max)(0, static_cast<int>(rc.bottom) - ButtonAreaHeight());
+        if (g_hGroupTree && IsWindowVisible(g_hGroupTree)) {
+            const int splitW = S(Layout::SPLIT_W);
+            const int maxW = (std::max)(S(Layout::TREE_MIN_W), static_cast<int>(rc.right) - S(Layout::LIST_MIN_W));
+            g_treePx = (std::min)((std::max)(S(g_treeW96), S(Layout::TREE_MIN_W)), maxW);
+            MoveWindow(g_hGroupTree, 0, 0, g_treePx, listH, TRUE);
+            MoveWindow(g_hListView, g_treePx + splitW, 0, (std::max)(0, static_cast<int>(rc.right) - g_treePx - splitW), listH, TRUE);
+        } else {
+            g_treePx = 0;
+            MoveWindow(g_hListView, 0, 0, rc.right, listH, TRUE);
+        }
 
         const int totalW = btnW * 2 + gap;
         const int startX = (rc.right - totalW) / 2;
@@ -2121,6 +2281,51 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         TrackNormalRect(hWnd);  // R8
         return 0;
 
+    // --- F7: the bar between the group tree and the list --------------------
+    // It is the strip of the main window left uncovered between the two
+    // controls; drag it to change the tree width.
+    case WM_SETCURSOR:
+        if (reinterpret_cast<HWND>(wParam) == hWnd && LOWORD(lParam) == HTCLIENT && g_treePx > 0) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hWnd, &pt);
+            RECT rc;
+            GetClientRect(hWnd, &rc);
+            if (g_splitDrag || (pt.x >= g_treePx && pt.x < g_treePx + S(Layout::SPLIT_W) &&
+                                pt.y < rc.bottom - ButtonAreaHeight())) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
+                return TRUE;
+            }
+        }
+        break;
+
+    case WM_LBUTTONDOWN: {
+        const int x = static_cast<short>(LOWORD(lParam));
+        if (g_treePx > 0 && x >= g_treePx && x < g_treePx + S(Layout::SPLIT_W)) {
+            g_splitDrag = true;
+            SetCapture(hWnd);
+        }
+        return 0;
+    }
+
+    case WM_MOUSEMOVE:
+        if (g_splitDrag) {
+            const int x = static_cast<short>(LOWORD(lParam)) - S(Layout::SPLIT_W) / 2;
+            g_treeW96 = MulDiv((std::max)(x, S(Layout::TREE_MIN_W)), static_cast<int>(Dpi::kBase),
+                               static_cast<int>(g_dpi));
+            SendMessageW(hWnd, WM_SIZE, 0, 0);  // re-layout (WM_SIZE clamps the width)
+            g_treeW96 = MulDiv(g_treePx, static_cast<int>(Dpi::kBase), static_cast<int>(g_dpi));
+        }
+        return 0;
+
+    case WM_LBUTTONUP:
+        if (g_splitDrag) ReleaseCapture();  // WM_CAPTURECHANGED ends the drag
+        return 0;
+
+    case WM_CAPTURECHANGED:
+        g_splitDrag = false;
+        return 0;
+
     case WM_DPICHANGED: {
         // Window moved to a monitor with a different DPI (or the user changed
         // scaling). Rescale fonts, columns and buttons, then take the size
@@ -2148,6 +2353,14 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             const HWND focus = GetFocus();
             if (focus == g_hListView) {
                 ActivateSelection(hWnd);
+            } else if (focus == g_hGroupTree) {
+                // F7: Enter in the group tree moves to its entries.
+                SetFocus(g_hListView);
+                if (ListView_GetNextItem(g_hListView, -1, LVNI_SELECTED) < 0 &&
+                    ListView_GetItemCount(g_hListView) > 0) {
+                    ListView_SetItemState(g_hListView, 0, LVIS_SELECTED | LVIS_FOCUSED,
+                                          LVIS_SELECTED | LVIS_FOCUSED);
+                }
             } else if (focus == g_hHostBox || IsChild(g_hHostBox, focus) || focus == g_hComboAction) {
                 OnGo(hWnd);
             }
@@ -2196,6 +2409,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         // F6: About link clicked, or Enter pressed while it has focus.
         if (pnmh->idFrom == IDC_LINK_ABOUT && (pnmh->code == NM_CLICK || pnmh->code == NM_RETURN)) {
             ShowAboutBox(hWnd);
+            return 0;
+        }
+        if (pnmh->idFrom == IDC_GROUP_TREE && pnmh->code == TVN_SELCHANGEDW) {  // F7
+            OnGroupTreeSelChanged(reinterpret_cast<const NMTREEVIEWW*>(lParam));
             return 0;
         }
         if (pnmh->idFrom == IDC_LISTVIEW) {
@@ -2386,7 +2603,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
 
     // Common Controls v6 (visual styles) -- requires DDLaunch.manifest to be
     // embedded via DDLaunch.rc.
-    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_LINK_CLASS };
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES | ICC_LINK_CLASS };
     InitCommonControlsEx(&icc);
     CheckCommonControlsVersion();
 
@@ -2474,6 +2691,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     // F4: Host box history from settings.json.
     LoadHostHistory();
     RefreshHostHistoryCombo();
+    // F7: group tree width and the group that was selected last time.
+    LoadTreeSettings();
     g_normalRectDpi = g_dpi;
 
     // Reopen maximized if it was closed maximized, unless the shortcut asked

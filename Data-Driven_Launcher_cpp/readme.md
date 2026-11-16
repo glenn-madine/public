@@ -1,9 +1,9 @@
 # DDLaunch+ — Data-Driven Launcher and Editor
 
-**DDLaunch+ 2.6.1** · **DDLaunch+ Editor 1.0.1** · Glenn Madine · Released 11/14/2026
+**DDLaunch+ 2.7.0** · **DDLaunch+ Editor 1.0.1** · Glenn Madine · Released 11/15/2026
 Win32 C++ (Windows SDK) · nlohmann/json 3.12.0
 
-DDLaunch+ is a small Windows launcher for the machines and resources you connect to every day. It shows a list of resources (hosts, drives or shell items), each with a **type** such as `RDP`, `SSH` or `HTTPS`. Double-clicking an entry runs the program or URL handler defined for that type. For a host that isn't in the list, type it in the **Host** box, pick an **Action**, and click **Go**.
+DDLaunch+ is a small Windows launcher for the machines and resources you connect to every day. It shows a list of resources (hosts, drives or shell items), each with a **type** such as `RDP`, `SSH` or `HTTPS`. Double-clicking an entry runs the program or URL handler defined for that type. When the connections are organized into groups, a tree on the left lets you show one group at a time. For a host that isn't in the list, type it in the **Host** box, pick an **Action**, and click **Go**.
 
 The app has no built-in protocols. The list and the launch rules come from two JSON files: `connections.json` and `actionDefinitions.json`. The **DDLaunch+ Editor** (`DDLaunchEdit.exe`) edits both files through forms, so nobody has to hand-edit JSON. DDLaunch+ picks up saved changes as soon as you switch back to it.
 
@@ -34,7 +34,7 @@ The app has no built-in protocols. The list and the launch rules come from two J
 
 | Program | File | What it does |
 |---|---|---|
-| **DDLaunch+** 2.6.1 | `DDLaunch.exe` (`DDLaunch.cpp`, ~2,500 lines) | Shows your resources and launches them; quick-launch row with host history |
+| **DDLaunch+** 2.7.0 | `DDLaunch.exe` (`DDLaunch.cpp`, ~2,750 lines) | Shows your resources (with a group tree) and launches them; quick-launch row with host history |
 | **DDLaunch+ Editor** 1.0.1 | `DDLaunchEdit.exe` (`DDLaunchEdit.cpp`, ~2,150 lines) | Form-based editor for `connections.json` and `actionDefinitions.json` |
 
 The two programs share the data folder, the JSON formats, the case rules, and the rules for building a launch. They work independently. When `DDLaunchEdit.exe` sits next to `DDLaunch.exe`, DDLaunch+'s **Edit Connections** and **Edit Actions** buttons open the editor on the matching tab. Without it, they open Notepad.
@@ -47,6 +47,7 @@ The two programs share the data folder, the JSON formats, the case rules, and th
 
 - **Data-driven.** Resources come from `connections.json` and launch rules from `actionDefinitions.json`. A new protocol is a JSON entry, not a code change.
 - **Programs or URLs.** An action's command is either an executable (run with arguments) or a URL prefix of any scheme: `https://`, `ssh://`, `file:///`, `mailto:`, `ms-settings:` and so on.
+- **Group tree.** When `connections.json` uses named groups, a tree on the left lists "All connections" and each group with its count, in file order. Selecting a group shows only its entries. The tree can be resized, and its width and the selected group are remembered.
 - **Quick launch.** A Host box, an Action dropdown (sorted A to Z) and a **Go** button run any action on any host. They use the same rules and error messages as a list entry.
 - **Host history.** The Host box remembers up to 25 hosts launched with Go, most recent first, each with its action. Shift+Delete removes an entry. The history survives restarts.
 - **Live reload.** Edits are picked up when the window is next activated. Only files whose timestamp or size changed are re-read.
@@ -91,7 +92,7 @@ The two programs share the data folder, the JSON formats, the case rules, and th
 | File | Used by | Purpose |
 |---|---|---|
 | `DDLaunch.cpp` | DDLaunch+ | The launcher |
-| `DDLaunch.rc` | DDLaunch+ | Icon, manifest (RT_MANIFEST id 1), version info 2.6.1.0 |
+| `DDLaunch.rc` | DDLaunch+ | Icon, manifest (RT_MANIFEST id 1), version info 2.7.0.0 |
 | `DDLaunch.manifest` | DDLaunch+ | Common Controls v6, Per-Monitor V2 DPI, `asInvoker`, supported Windows versions |
 | `DDLaunchEdit.cpp` | Editor | The editor |
 | `DDLaunchEdit.rc` | Editor | Icon, manifest, version info 1.0.1.0 |
@@ -138,7 +139,7 @@ All user data lives in `%USERPROFILE%\DDLaunch\` (for example `C:\Users\glenn\DD
 |---|---|---|
 | `actionDefinitions.json` | Created by DDLaunch+ if missing (RDP / SSH / HTTPS / HTTP); edited by the editor | Launch rules, one per type |
 | `connections.json` | Created by DDLaunch+ if missing (`[]`); edited by the editor | The resources shown in the list |
-| `settings.json` | DDLaunch+, on exit and after every Host history change | Window placement and Host history |
+| `settings.json` | DDLaunch+, on exit and after every Host history change | Window placement, group tree width and selected group, and Host history |
 | `editor.json` | The editor, on exit | Editor window placement, last tab, test host |
 | `*.json.bak` | The editor, on each save | The previous version of a saved file |
 
@@ -216,14 +217,17 @@ This file can be a **flat array**:
 | `description` | Free text shown in the list |
 
 - All fields are optional strings. A missing or non-string field is shown as blank. Other fields are ignored by DDLaunch+ and kept by the editor.
-- Group names organize the file but aren't shown in DDLaunch+'s list. The editor shows and edits them.
+- Group names are shown in DDLaunch+'s **group tree**. Groups, and the unsorted list, follow the order they have in the file. The editor shows and edits group names.
+- A flat array has no groups, so DDLaunch+ shows no tree.
 - If the file can't be read or isn't valid JSON, DDLaunch+ shows an error once and keeps the current list until the file is fixed.
 
 ### `settings.json` (DDLaunch+)
 
 ```json
 {
-    "window": { "x": 120, "y": 80, "width": 640, "height": 420, "maximized": false },
+    "window": { "x": 120, "y": 80, "width": 780, "height": 420, "maximized": false },
+    "treeWidth": 190,
+    "group": "RDP connections",
     "hostHistory": [
         { "host": "fileserver02", "action": "RDP" },
         { "host": "admin@pi07",   "action": "SSH" }
@@ -232,6 +236,7 @@ This file can be a **flat array**:
 ```
 
 - `x`/`y` are screen pixels. `width`/`height` are in 96-DPI units, so the window keeps the same apparent size on monitors with different scaling.
+- `treeWidth` is the group tree's width in 96-DPI units (80 to 2000; default 190). `group` is the group selected when DDLaunch+ closed. It's absent when **All connections** was selected, and ignored if the group no longer exists.
 - `hostHistory` is most recent first, at most 25 entries. Entries without a `host`, and repeats of a host, are skipped when read. An `action` that no longer exists is kept but not applied.
 - You can edit or clear `hostHistory` by hand while DDLaunch+ is closed. While it's running, its own copy overwrites the file on the next save.
 
@@ -252,23 +257,29 @@ This file can be a **flat array**:
 ## Using DDLaunch+
 
 ```
-+-----------------------------------------------------------------------+
-| DDLaunch+ v2.6.1 - double-click a row or press Enter to launch        |
-+-----------------------------------------------------------------------+
-| Resource (Host, Drive, or Shell Item) |  Type  | Description          |
-| dc01.ynext.corp                       |  RDP   | Domain controller    |
-| admin@pi01                            |  SSH   | Raspberry Pi 01      |
-| ...                                                                   |
-|                                                                       |
-| Host: [host name, IP or URL      v]  Action: [RDP     v] [    Go    ] |
-| [ Edit Actions                    ] [ Launch RDP connection for... ]  |
-| [ Edit Connections                ] [ Run...      ] [ Exit         ]  |
-| About                                                                 |
-+-----------------------------------------------------------------------+
++----------------------------------------------------------------------------------+
+| DDLaunch+ v2.7.0 - double-click a row or press Enter to launch                   |
++----------------------------------------------------------------------------------+
+| All connections (82)     || Resource (Host, Drive...) | Type | Description       |
+|   RDP connections (26)   || dc1.ynext.corp            | RDP  | Windows 2012R2 DC |
+|   VNC connections (5)    || dc3.ynext.corp            | RDP  | Windows 2012R2 DC |
+|   HTTP connections (7)   || dc5.ynext.corp            | RDP  | Windows 2016 DC   |
+|   HTTPS connections (27) || sql.ynext.corp            | RDP  | SQL 2012          |
+|   SSH connections (1)    || ...                                                  |
+|   ...                    ||                                                      |
+|  group tree              ^^ drag bar      list                                   |
+|                                                                                  |
+| Host: [host name, IP or URL      v]  Action: [RDP     v] [    Go    ]            |
+| [ Edit Actions                    ] [ Launch RDP connection for... ]             |
+| [ Edit Connections                ] [ Run...      ] [ Exit         ]             |
+| About                                                                            |
++----------------------------------------------------------------------------------+
 ```
 
 | Control | Action |
 |---|---|
+| **Group tree** (grouped files only) | Click **All connections** or a group, or move with the arrow keys, to choose what the list shows |
+| Bar between the tree and the list | Drag to make the tree wider or narrower |
 | Double-click a row / **Enter** on the list | Launch the selected entry |
 | Click a column header | Sort by that column; click again to reverse the order |
 | **Host** box | Type a host name, `user@host`, `host:port`, a path or a URL, or open the list (arrow, F4 or Alt+Down) to pick a recent host |
@@ -282,11 +293,18 @@ This file can be a **flat array**:
 
 **Keyboard**
 
-- Tab and Shift+Tab move through the controls in screen order: the list, Host, Action, Go, Edit Actions, Launch RDP, Edit Connections, Run, Exit, About.
-- Enter or Space presses the focused button. Enter on the list launches the selected entry. Enter in the Host box or Action dropdown runs **Go**. Enter on About opens it.
+- Tab and Shift+Tab move through the controls in screen order: the group tree (when shown), the list, Host, Action, Go, Edit Actions, Launch RDP, Edit Connections, Run, Exit, About.
+- Enter or Space presses the focused button. Enter in the group tree moves to the list (selecting its first row if none is selected). Enter on the list launches the selected entry. Enter in the Host box or Action dropdown runs **Go**. Enter on About opens it.
 - **Alt+H** moves to the Host box and selects its text, **Alt+A** moves to the Action dropdown, and **Alt+G** runs Go.
 - In the Host box, **F4** or **Alt+Down** opens the history. With the list open, **Shift+Delete** removes the highlighted entry.
 - **Esc is ignored** on purpose.
+
+**Group tree**
+
+- The tree appears only when `connections.json` is an object of named groups. **All connections (*N*)** is at the top, with each group below it as "*group* (*count*)", in file order.
+- Selecting a group shows only its entries. Column sorting, the selected row, launching and the quick-launch row work the same within a group.
+- When the file changes, the groups and counts are rebuilt. If the selected group was removed or renamed, the tree goes back to **All connections**. If the file becomes a flat array, the tree is hidden and the list takes the full width.
+- The bar between the tree and the list can be dragged. The tree is at least 100 px wide and the list keeps at least 240 px. The width (in 96-DPI units) and the selected group are saved in `settings.json`.
 
 **Host history**
 
@@ -297,7 +315,7 @@ This file can be a **flat array**:
 
 **Live editing.** Save in the editor (or Notepad) and click back into DDLaunch+. The list and the Action dropdown update, and the selected row, sort order and chosen action are kept.
 
-**Window.** There's a minimum size, so the buttons never overlap and some of the list always shows. If a shortcut is set to "Run: Minimized", that setting takes priority over a saved maximized state.
+**Window.** The default size on first run is 780 × 400 (at 96 DPI), wide enough for the tree. There's a minimum size, so the buttons never overlap and some of the list always shows. If a shortcut is set to "Run: Minimized", that setting takes priority over a saved maximized state.
 
 ---
 
@@ -382,7 +400,7 @@ Start it with DDLaunch+'s **Edit Connections** / **Edit Actions** buttons, or ru
 | **Host** | Host name, `user@host`, `host:port`, a path or a URL |
 | **Type** | Dropdown of the defined actions (A to Z, first of any duplicates). You can also type any name. |
 | **Description** | Optional; shown in DDLaunch+'s list |
-| **Group** | Optional; the groups already in use are offered. Groups only organize the file. |
+| **Group** | Optional; the groups already in use are offered. Groups organize the file and become the items in DDLaunch+'s group tree. |
 | **Launches** | What DDLaunch+ will run for this entry, or why it can't (no host, no type, no such action) |
 
 The list columns are Host, Type, Description, Group and **Check**.
@@ -461,10 +479,10 @@ Each program has a blue **About** link: under the buttons in DDLaunch+, and at t
 
 | DDLaunch+ About | Editor About |
 |---|---|
-| DDLaunch+ v2.6.1, Data-Driven Launcher | DDLaunch+ Editor v1.0.1 |
+| DDLaunch+ v2.7.0, Data-Driven Launcher | DDLaunch+ Editor v1.0.1 |
 | Author: Glenn Madine | Author: Glenn Madine |
-| Release date: 11/14/2026 | Release date: 11/14/2026 |
-| Version: 2.6.1 | Version: 1.0.1 |
+| Release date: 11/15/2026 | Release date: 11/14/2026 |
+| Version: 2.7.0 | Version: 1.0.1 |
 | Editor: installed (Edit buttons open it) or not installed (Edit buttons open Notepad) | |
 | Win32 C++ · nlohmann/json 3.12.0 | Win32 C++ · nlohmann/json 3.12.0 |
 
@@ -517,7 +535,7 @@ The editor's status line shows the data folder at startup, then the result of th
 | Text conversion | `Utf8ToWide`, `WideToUtf8`, `ExceptionText` | Converts between UTF-8 (on disk and in nlohmann/json) and UTF-16 (Win32) |
 | Actions | `struct Action`, `from_json`, `loadActions`, `EqualsIgnoreCase`, `findAction` | Parses `actionDefinitions.json` and finds actions ignoring case (`CompareStringOrdinal`) |
 | File reading | `ReadFileUtf8` | `CreateFileW`/`ReadFile` with full sharing, so non-ASCII paths and open editors are fine |
-| Devices | `struct Device`, `LoadConnections` | Accepts an array or an object of groups. Returns `std::nullopt` on error so the old list is kept. |
+| Devices | `struct Device`, `LoadConnections` | Parses with `ordered_json` (file order kept). Accepts an array or an object of groups, and records each entry's group and file position. Returns `std::nullopt` on error so the old list is kept. |
 | Paths and seeding | `GetUserProfileDir`, `GetDataDir`, `EnsureDataFiles`, `CreateFileWithDefaultContent` | Resolves `%USERPROFILE%\DDLaunch` and creates missing files (`CREATE_NEW`, never overwrites) |
 | Editing | `OpenJsonFileForEditing` | Starts `DDLaunchEdit.exe /connections` or `/actions` when it sits next to the exe; otherwise runs `notepad.exe "<path>"` |
 | Launching | `StartsWithUrlScheme`, `HostIsFullUrl`, `EncodeUrlUnsafeChars`, `QuoteArgIfNeeded`, `LaunchSomething`, `ShellOpen`, `ReportLaunchFailure`, `GetErrorText` | Detects URLs, builds the URL or quotes the argument, launches via `ShellExecuteExW` and reports errors |
@@ -526,23 +544,24 @@ The editor's status line shows the data folder at startup, then the result of th
 | Placement and settings | `ClampToWorkArea`, `WindowSettings`, `LoadWindowSettings`, `SaveSettings`, `TrackNormalRect` | Restores the window inside the monitor's work area and writes `settings.json` atomically |
 | Host history | `HostHistoryEntry`, `g_hostHistory`, `LoadHostHistory`, `RefreshHostHistoryCombo`, `OnHostHistoryPicked`, `AddHostHistory`, `HandleHostHistoryDelete` | Loads, shows, updates and saves the Host box history |
 | Sorting | `ApplyCurrentSort`, `ToggleSortColumn`, `UpdateHeaderSortArrow` | `std::stable_sort` with `CompareStringOrdinal` (ignoring case), plus the header arrows |
-| Identity and list | `AssignDeviceIds`, `FindDeviceIndexById`, `GetRowDeviceId`, `PopulateListView` | Stable IDs in each row's `lParam`; selection and focus restored after a refill |
+| Identity and list | `AssignDeviceIds`, `FindDeviceIndexById`, `GetRowDeviceId`, `PopulateListView` | Stable IDs in each row's `lParam`; shows only the selected group; selection and focus restored after a refill |
+| Group tree | `g_hGroupTree`, `g_selGroup`, `g_groupNames`, `RebuildGroupTree`, `OnGroupTreeSelChanged`, `LoadTreeSettings` | Builds "All connections" plus one item per group (file order, with counts). Hides the tree for flat files and filters the list on selection. Width and group are kept in `settings.json`. |
 | Action dropdown | `GetWindowTextString`, `GetSelectedActionName`, `PopulateActionCombo` | One entry per name, sorted A to Z; keeps the choice across reloads, else selects the file's first action |
 | Reload | `FileStamp`, `GetFileStamp`, `ReloadAllData`, `WarnAboutDuplicateActions` | Reloads only changed files, with a re-entrancy guard and one error per save |
 | Launch logic | `LaunchWithAction`, `OnItemActivated`, `ActivateSelection`, `OnGo` | One shared routine checks, launches, reports and returns success. Go adds successful launches to the history. |
-| Layout | `namespace Layout`, `S()`, `MeasureButtonWidth`, `MeasureTextWidth`, `ButtonAreaHeight`, `ApplyDpi`, `RescaleForDpi`, `CreateButton`, `CreateLabel` | 96-DPI design values; quick-launch row, two button rows and the About row |
+| Layout | `namespace Layout`, `S()`, `MeasureButtonWidth`, `MeasureTextWidth`, `ButtonAreaHeight`, `ApplyDpi`, `RescaleForDpi`, `CreateButton`, `CreateLabel` | 96-DPI design values. Group tree and list side by side, with a 5-px drag bar; below them the quick-launch row, two button rows and the About row. |
 | About | `CreateAboutLink`, `ShowAboutBox` | SysLink (or fallback label) and an icon message box via `MessageBoxIndirectW` |
-| Window | `WndProc` | `WM_CREATE`, `WM_SIZE`, `WM_GETMINMAXINFO`, `WM_MOVE`, `WM_DPICHANGED`, `WM_COMMAND`, `WM_NOTIFY`, `WM_ACTIVATE`, `WM_SETFOCUS`, `WM_ENDSESSION`, `WM_DESTROY` |
+| Window | `WndProc` | `WM_CREATE`, `WM_SIZE`, `WM_GETMINMAXINFO`, `WM_MOVE`, `WM_DPICHANGED`, `WM_COMMAND`, `WM_NOTIFY` (list, tree `TVN_SELCHANGED`, About link), `WM_ACTIVATE`, `WM_SETFOCUS`, `WM_ENDSESSION`, `WM_DESTROY`, and the drag bar: `WM_SETCURSOR`, `WM_LBUTTONDOWN`, `WM_MOUSEMOVE`, `WM_LBUTTONUP`, `WM_CAPTURECHANGED` |
 | Startup | `CheckCommonControlsVersion`, `AcquireSingleInstance`, `HandleQuickLaunchMnemonic`, `wWinMain` | Single instance → COM (STA) → DPI → common controls → window → placement → history → show → first load → message loop |
 
 **Startup sequence.**
 
 1. Single-instance check.
 2. `CoInitializeEx` (STA).
-3. DPI fallback, then `InitCommonControlsEx` (list view, standard and link classes) and the Common Controls v6 check.
-4. Register the class and create the hidden window. `WM_CREATE` builds the controls in Tab order.
-5. Place the window from `settings.json`, scaled and clamped, then rescale to the final DPI, and load the Host history.
-6. Show the window and do the first data load, so error boxes appear over a visible window.
+3. DPI fallback, then `InitCommonControlsEx` (list view, tree view, standard and link classes) and the Common Controls v6 check.
+4. Register the class and create the hidden window. `WM_CREATE` builds the controls in Tab order: the group tree (hidden until groups are found), then the list and the rest.
+5. Place the window from `settings.json`, scaled and clamped, then rescale to the final DPI. Load the Host history and the tree settings (width and last group).
+6. Show the window and do the first data load, so error boxes appear over a visible window. The load builds the group tree and selects the remembered group.
 7. Message loop: `HandleQuickLaunchMnemonic`, `HandleHostHistoryDelete`, then `IsDialogMessageW`. `CoUninitialize` runs after the loop ends.
 
 ---
@@ -579,6 +598,9 @@ The editor's status line shows the data folder at startup, then the result of th
 - **Stable IDs.** Both programs give every entry an ID stored in its list row's `lParam`. Selection, editing and launching never depend on row position, sorting or filtering.
 - **Case rules.** Action matching, duplicate detection, the history's duplicate check and all sorting use `CompareStringOrdinal(…, TRUE)`, the invariant rule the file system uses, so results don't depend on locale.
 - **One set of launch rules.** DDLaunch+'s list entries and Go share `LaunchWithAction`. The editor's `DescribeLaunch` is a copy of the same helper functions. If DDLaunch+'s launch rules ever change, update both.
+- **File order.** DDLaunch+ reads `connections.json` with `nlohmann::ordered_json`, because plain `nlohmann::json` stores object keys sorted A to Z, which would reorder the groups. The editor uses `ordered_json` for the same reason.
+- **Group tree is a view.** Each entry remembers its group name and file position. The tree only changes which entries `PopulateListView` shows, so IDs, selection, sorting and launching are untouched. Tree selection notifications are ignored while the tree is being rebuilt (`g_buildingTree`).
+- **Drag bar.** The bar is just the uncovered strip of the main window between the tree and the list, so it needs no extra control. Mouse capture keeps the drag going even when the pointer leaves the strip.
 - **Round-trip editing.** The editor parses with `nlohmann::ordered_json`, which keeps keys in file order, and writes edits back into each entry's original object. Fields it doesn't know about survive.
 - **Safe writes.** `settings.json`, `editor.json` and the two config files saved by the editor are written to a temporary file and swapped in with `MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`.
 - **Single instance per logon session.** Both use a mutex in the `Local\` namespace. DDLaunch+ brings the existing window forward. The editor also posts a registered message telling the running copy which tab to show.
@@ -592,8 +614,8 @@ The editor's status line shows the data folder at startup, then the result of th
 
 **DDLaunch+**
 
-- Group names aren't shown in the list, and the list can't be filtered or searched.
-- The sort column and the chosen action aren't saved between runs. The list opens in file order, and the first action in the file is selected.
+- The list can't be searched or filtered by text; the group tree is the only filter. Groups are one level deep, and can't be renamed or edited in DDLaunch+ (use the editor).
+- The sort column and the chosen action aren't saved between runs (the selected group is). The list opens in file order, and the first action in the file is selected.
 - The Host history can't be cleared in one step. Remove entries with Shift+Delete, or edit `settings.json` while the app is closed.
 - `args` is ignored for URL actions, and a URL can only be built as prefix + host. A literal `#` or `%` in a host is passed as-is.
 - **Launch RDP…** runs `mstsc.exe` found through the search path and the App Paths registry key.
@@ -614,7 +636,8 @@ The editor's status line shows the data folder at startup, then the result of th
 
 | Version | Highlights |
 |---|---|
-| **2.6.1** | **About** link and box (version, author, release date, editor installed). Edit buttons renamed **Edit Actions** and **Edit Connections**. |
+| **2.7.0** | **Group tree**: "All connections" plus one item per group with counts, in file order; selecting one filters the list. Resizable drag bar. Tree width and selected group saved in `settings.json`. `connections.json` read in file order (`ordered_json`). Default window 780 px wide. |
+| 2.6.1 | **About** link and box (version, author, release date, editor installed). Edit buttons renamed **Edit Actions** and **Edit Connections**. |
 | 2.6.0 | Edit buttons open the DDLaunch+ Editor on the matching tab when it sits next to `DDLaunch.exe`; otherwise Notepad. |
 | 2.5.0 | Host box history: up to 25 hosts launched with Go, each with its action; Shift+Delete removes; saved in `settings.json`. |
 | 2.4.2 | Action dropdown sorted A to Z; the file's first action is the default. |
