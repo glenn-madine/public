@@ -1,315 +1,308 @@
-# Clippi — Clipboard Buttons
+# Clippi – Clipboard Buttons
 
-**Version 1.0.0** · Win32 desktop application · C++17 · Visual Studio 2022
+**Version 1.2.0** · Glenn Madine · November 23, 2026 · Pure Win32 / C++17 · Windows 10 and 11
 
-Clippi is a small Windows tool that shows a column of buttons, each holding a ready-made message. Click a button and its text is copied to the clipboard, ready to paste into a chat, ticket or email. Messages can ask for a value first (for example, a software name) and can include a picture such as a company logo.
+Clippi is a small Windows tool that keeps canned support text one click away. Each button copies a prepared message to the clipboard: a chat reply, a ticket note, a meeting-request body or a command line. Before copying, it can ask for a value such as the application name and fill it in. **Clippi Editor** is the companion program used to create and edit those buttons, including formatted text, links and pictures.
 
-The buttons are defined in a JSON file, so you can add, change or remove messages without rebuilding the program.
+Clippi only copies text to the clipboard. It never runs the commands it holds; the Paste button only presses Ctrl+V in the window you were using.
 
-## Features
+---
 
-- **One click, one message.** Each button copies its text to the clipboard.
-- **Fill-in values.** A message can contain `%XXX%`. Clippi asks for the value first and inserts it.
-- **Pictures in messages.** A message can contain a PNG image (for example, a signature logo). It pastes with the picture into Outlook, Word and Teams, and as text only into plain-text apps.
-- **Paste for you.** The **Paste** button switches back to the window you were working in and pastes the clipboard there, so you don't have to click back and press Ctrl+V.
-- **Always on top.** Keeps the window above all other windows while you work. The choice is remembered.
-- **Edit in place.** The **Edit Clips** button opens the button file in Notepad. When you close Notepad, Clippi reloads the buttons if you saved changes.
-- **Reload without restarting.** Edit the JSON file and press F5.
-- **Self-contained.** One .exe with no installer and no external libraries. The default button file is built into the .exe and written out on first run.
-
-## Quick start
-
-1. Open `ClipBoardButtons.sln` in Visual Studio 2022.
-2. Make sure `Clippi.ico` is in the project folder.
-3. Choose **Release | x64** and build (**Ctrl+Shift+B**).
-4. Run `x64\Release\ClipBoardButtons.exe`.
-
-On first run, Clippi creates `%USERPROFILE%\Clippi_Storage\ClipBoardButtonDefinitions.json` from its built-in defaults. To change your buttons, click **Edit Clips**, edit and save the file, and close Notepad. The buttons reload automatically.
-
-## Requirements
-
-| Item | Requirement |
-|---|---|
-| Operating system | Windows 10 or 11 (Windows 7 and later should work) |
-| To build | Visual Studio 2022 with the "Desktop development with C++" workload (toolset v143, Windows 10/11 SDK) |
-| Alternative build | MinGW-w64 (g++ and windres) |
-| Libraries | Windows only: user32, gdi32, comctl32, shell32, advapi32 |
-
-## Project files
+## 1. Contents of the package
 
 | File | Purpose |
 |---|---|
-| `ClipBoardButtons.cpp` | The entire program. |
-| `ClipBoardButtons.rc` | Resources: the icon, the default JSON (embedded in the .exe) and the version information. |
-| `resource.h` | Resource IDs and the version number. |
-| `ClipBoardButtonDefinitions.json` | The default buttons that are built into the .exe. |
-| `Clippi.ico` | Application icon (supply your own). |
-| `L3Harris_logo.png` | Source copy of the logo used in the Signature button. Not needed at run time. |
-| `ClipBoardButtons.vcxproj` / `.sln` | Visual Studio project and solution. |
+| `ClipBoardButtons.cpp` | Clippi, the main program (1,746 lines) |
+| `ClippiEditor.cpp` | Clippi Editor, the helper program for editing the buttons (3,231 lines) |
+| `resource.h` | Shared version number, author, date and resource IDs |
+| `ClipBoardButtons.rc` | Clippi resources: icon, embedded default button file, version info |
+| `ClippiEditor.rc` | Clippi Editor resources: icon, version info |
+| `ClipBoardButtonDefinitions.json` | The default buttons (19 buttons in 7 groups), embedded in Clippi's .exe |
+| `Clippi.ico` | Program icon used by both programs. **Not in this upload; required to build.** |
 
-## Configuring the buttons
+---
 
-### Where the file lives
+## 2. Building
 
-Clippi always reads:
+### Visual Studio 2019 / 2022
 
-```
-%USERPROFILE%\Clippi_Storage\ClipBoardButtonDefinitions.json
-```
+Create two projects (**Windows Desktop Application**, empty) in one solution, for example `ClipBoardButtons` and `ClippiEditor`.
 
-The **Edit Clips** button opens this file in Notepad. If the folder or file does not exist, Clippi creates it from the copy built into the .exe. An existing file is **never overwritten**, so your edits are safe when you install a new version. To get a new version's default buttons, delete the file and restart Clippi.
-
-### File format
-
-The file is a JSON array. Each object in the array becomes one button, in order.
-
-```json
-[
-    {
-        "buttonText": "Are you ready",
-        "pasteText": "Are you ready for me to remote into your PC and install %XXX%?\\n\\nNOTE: Please close any sensitive information first.",
-        "inputBoxTitle": "Software Name"
-    },
-    {
-        "buttonText": "Done",
-        "pasteText": "I have now disconnected. Have a great day!",
-        "inputBoxTitle": ""
-    }
-]
-```
-
-| Field | Required | Description |
-|---|---|---|
-| `buttonText` | Yes | The label on the button. If missing, the button shows "(unnamed)". |
-| `pasteText` | Yes | The text copied to the clipboard. See the markup table below. |
-| `inputBoxTitle` | No | If not empty, Clippi asks for a value before copying. This is the title of that prompt. |
-
-Other fields are ignored. The file must be strict JSON: no comments and no trailing commas. UTF-8 (with or without a BOM) and UTF-16 with a BOM are accepted.
-
-### pasteText markup
-
-| Markup | Result |
+| Project | Add these files |
 |---|---|
-| `\\n` | Line break. Written with two backslashes in the JSON file. |
-| `\\t` | Tab. |
-| `%XXX%` | Replaced by the value typed into the prompt. Every occurrence is replaced. |
-| `%IMG:<base64>%` | A PNG picture, written as base64 text. See "Adding a picture" below. |
+| ClipBoardButtons | `ClipBoardButtons.cpp`, `ClipBoardButtons.rc`, `resource.h`, `Clippi.ico`, `ClipBoardButtonDefinitions.json` |
+| ClippiEditor | `ClippiEditor.cpp`, `ClippiEditor.rc`, `resource.h`, `Clippi.ico` |
 
-The standard JSON escapes (`\n`, `\t`, `\"`, `\\`, `\uXXXX`) also work.
+Project settings, for both projects and all configurations:
 
-### Adding a picture
+- **C/C++ › Language › C++ Language Standard:** ISO C++17 (or later)
+- **Advanced › Character Set:** Use Unicode Character Set (the code also defines `UNICODE` itself)
+- **Linker › System › SubSystem:** Windows (`/SUBSYSTEM:WINDOWS`); the entry point is `wWinMain`
+- **Libraries:** nothing to add. Each .cpp file links what it needs with `#pragma comment(lib, …)`: comctl32, comdlg32, shell32, advapi32, ole32, gdi32 and windowscodecs. It also requests Common Controls 6 through a `/manifestdependency` pragma.
 
-To put a picture in a message, convert a PNG file to base64 and place it inside `%IMG:` and `%`. In PowerShell:
+Put **ClippiEditor.exe in the same folder as ClipBoardButtons.exe**. Clippi's *Edit Clips* button looks for the editor there and falls back to Notepad if it isn't found.
 
-```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\path\logo.png")) | Set-Clipboard
+### MinGW-w64 (optional; used for test builds)
+
+```
+x86_64-w64-mingw32-g++ -std=c++17 -municode -mwindows -O2 ClipBoardButtons.cpp -o ClipBoardButtons.exe -lcomctl32 -lshell32 -ladvapi32
+x86_64-w64-mingw32-g++ -std=c++17 -municode -mwindows -O2 ClippiEditor.cpp -o ClippiEditor.exe -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lwindowscodecs -luuid -lgdi32
 ```
 
-Then paste it into the JSON, for example:
+Compile the resource files with `windres` and link them in to get the icon, version info and embedded default buttons. Both programs compile with `-Wall` without errors or warnings.
 
-```json
-"pasteText": "Glenn Madine\\nSomePlace ST USA\\n%IMG:iVBORwx0KGgo...%"
+### Changing the version
+
+Edit `resource.h`. The three numbers and the two strings must match (see finding 1 in section 8):
+
+```
+#define APP_VERSION_MAJOR 1
+#define APP_VERSION_MINOR 2
+#define APP_VERSION_PATCH 0
+#define APP_VERSION_STR   "1.2.0"
+#define APP_VERSION_WSTR  L"1.2.0"
 ```
 
-Keep pictures small (a few KB). Reducing the PNG to 64 or 256 colors usually shrinks it a lot with no visible difference.
+---
 
-When a message contains a picture, Clippi places three versions on the clipboard and the target app picks the best one it supports:
+## 3. First run and where files live
 
-| Clipboard format | Used by | What pastes |
-|---|---|---|
-| Rich Text Format | Outlook, Word | Text and picture |
-| HTML Format | Teams, browsers, web mail | Text and picture |
-| Unicode text | Notepad, terminals, plain-text fields | Text only |
+| Item | Location |
+|---|---|
+| Button file | `%USERPROFILE%\Clippi_Storage\ClipBoardButtonDefinitions.json` |
+| Backup made by the editor | same folder, `ClipBoardButtonDefinitions.json.bak` |
+| Settings | `HKCU\Software\ClipBoardButtons`: `AlwaysOnTop` (DWORD), `LastGroup` (string) |
 
-Text in the rich versions uses Calibri 11 pt. Messages without a picture copy plain text only.
+On first run, Clippi creates `Clippi_Storage` and writes the default button file embedded in the .exe. An existing file is **never overwritten** (`CREATE_NEW`), so your edits survive upgrades. The editor opens the same file, or the file given on its command line.
 
-## Using Clippi
+---
 
-### The window
+## 4. Using Clippi
 
-- **Message buttons:** one per JSON entry, all the same width and stretched to fill the window. The window is wide enough for the longest label. If there are too many buttons to fit in 80% of the screen height, they wrap into additional columns.
-- **Always on top:** checkbox, bottom left.
-- **Paste:** button, bottom right. Pastes the clipboard into the window you used before Clippi (see below).
-- **Edit Clips:** button, bottom right. Opens the button file in Notepad (see below).
-- **Exit:** button, bottom right.
-- **Status line:** shows how many buttons loaded, or what was last copied.
-- **About:** blue link at the right end of the status line. Opens the About box with the author, version and date.
-- **Title bar:** "Clippi" and the version number.
+The window has a **groups list** on the left and the **buttons of the selected group** on the right. Below them are *Always on top*, *Paste*, *Edit Clips* and *Exit*, then a status line with an *About* link.
 
-### Prompting for a value
+Clicking a button:
 
-For a button with an `inputBoxTitle`, a small box opens asking for the value. The box remembers the last value you typed for that prompt until Clippi is closed. OK is refused (with a beep) if the box is empty. Cancel copies nothing.
-
-### Pasting with the Paste button
-
-1. Click in the place you want to paste into, such as a chat box, ticket or email.
-2. In Clippi, click a message button to copy it.
-3. Click **Paste**. Clippi switches back to that window and presses Ctrl+V there. The status line shows "Pasted into: <window title>".
-
-Clippi remembers the last window you used before switching to it, ignoring the taskbar, Start menu, desktop and Alt+Tab. You can click several message buttons and press Paste after each one; they all go to the same window until you use a different one. Paste sends whatever is on the clipboard, including anything copied from another program, and the target app receives the picture too if the clip has one.
-
-### Editing your clips
-
-1. Click **Edit Clips**. The button file opens in Notepad.
-2. Make your changes and save (**Ctrl+S**).
-3. Close Notepad. If the file changed, Clippi reloads the buttons and shows "Clips updated: N buttons loaded."
-
-Clippi also checks the file whenever you switch back to its window. This catches changes saved in another editor, or in Windows 11 Notepad when the file opens as a tab in a Notepad window that was already open. If the file has a mistake, an error box shows the line and column, and the previous buttons stay in place until you fix it and save again.
-
-### Keyboard
+1. If the button has a prompt title, Clippi asks for a value. The first prompt is required; the second is optional and its box says "(optional)". The last answer for each prompt title is remembered for the session.
+2. The text is copied to the clipboard as plain text, plus RTF and HTML versions when the button has formatting or pictures.
+3. The status line shows *Copied: …*. Press **Paste** (Alt+P) to switch back to the window you were using and press Ctrl+V there.
 
 | Key | Action |
 |---|---|
-| Tab / Shift+Tab | Move between buttons |
-| Enter or Space | Press the selected button |
-| F5 | Reload the JSON file |
-| Alt+T | Toggle Always on top |
-| Alt+P | Paste into the last window used |
-| Alt+E | Edit Clips |
+| Ctrl+Tab / Ctrl+Shift+Tab (or Ctrl+PgDn / Ctrl+PgUp) | Next / previous group |
+| Tab, arrow keys, Enter, Space | Move between buttons and press them |
+| Alt+T | Always on top |
+| Alt+P | Paste into the previous window |
+| Alt+E | Edit Clips (opens Clippi Editor) |
 | Alt+X | Exit |
+| F5 | Reload the button file (also System menu › Reload Buttons) |
 
-The window's title-bar menu (click the icon or press Alt+Space) also has **Always on Top**, **Reload Buttons** and **About Clippi**.
+Other behavior:
 
-### Status messages
+- **Window size:** the window is sized for the largest group, so it doesn't jump when you switch groups. A group taller than about 80% of the screen wraps into extra columns.
+- **Paste target:** Clippi remembers the last window you used before switching to it. Clippi Editor's window is never chosen as the target.
+- **Automatic reload:** after *Edit Clips*, the buttons reload when the editor closes, or when you switch back to Clippi, if the file was saved.
+- **High DPI:** Clippi is per-monitor DPI aware (Windows 10 1607 or later) and re-lays itself out when moved to a monitor with different scaling.
 
-| Message | Meaning |
+---
+
+## 5. Using Clippi Editor
+
+| Area | What it does |
 |---|---|
-| `N buttons loaded.  F5 = reload` | The file loaded successfully. |
-| `Copied: <button>` | That button's text is on the clipboard. |
-| `Cancelled.` | The prompt was cancelled; nothing was copied. |
-| `Pasted into: <window title>` | Paste sent Ctrl+V to that window. |
-| `Nothing to paste into. Click in the target window first.` | No other window has been used since Clippi started, or it was closed. |
-| `The clipboard is empty.` | There was nothing on the clipboard to paste. |
-| `Could not switch to <window title>.` | Windows didn't allow Clippi to bring that window to the front. |
-| `Paste was blocked by Windows.` | The keystrokes were refused, usually because the target runs as administrator. |
-| `Editing clips... buttons reload when Notepad is closed.` | Edit Clips opened Notepad. |
-| `Clips updated: N buttons loaded.` | The file was changed and the buttons were reloaded. |
-| `Editor closed. No changes.` | Notepad was closed without saving changes. |
-| `Editing in Notepad... changes load when you return to Clippi.` | The file opened in a Notepad window that was already open; changes load when you switch back to Clippi. |
-| `No buttons defined in the JSON file.` | The file is valid but the array is empty. |
-| `Failed to load button definitions.` | An error box explained the problem; the previous buttons are kept. |
+| Buttons list (left) | All buttons as *Group: Label*, tagged `[formatted]`, `[asks]` or `[asks 2]`. Add, Duplicate, Delete, Move Up, Move Down (Ctrl+N adds) |
+| Button label | Text on the button in Clippi |
+| Group | Type a new name or pick an existing one; empty means "General". Groups appear in Clippi in the order they first occur |
+| Prompt title / Second prompt title | If filled in, Clippi asks for a value and puts it where `%XXX%` / `%YYY%` is |
+| Insert %XXX% / Insert %YYY% | Insert a placeholder at the cursor |
+| Formatting toolbar | **B** **I** **U** **S** (they light up to match the selection), Font…, Color…, Link…, Picture…, Clear format |
+| Text to paste | WYSIWYG rich-text box (Rich Edit). What you see is what pastes |
+| Insert from HTML/RTF file… | Adds a file's contents at the cursor |
+| Export RTF… / Export HTML… | Saves the current button's formatted version to a file |
+| Save / Close | Ctrl+S saves; closing with unsaved changes asks first |
 
-## Settings and storage
+**Keyboard and paste in the text box**
 
-| What | Where |
+| Key | Action |
 |---|---|
-| Button definitions | `%USERPROFILE%\Clippi_Storage\ClipBoardButtonDefinitions.json` |
-| Always on top | Registry: `HKEY_CURRENT_USER\Software\ClipBoardButtons`, value `AlwaysOnTop` (DWORD, 1 = on) |
-| Last values typed in prompts | Memory only; cleared when Clippi closes |
+| Ctrl+B / Ctrl+I / Ctrl+U | Bold / italic / underline |
+| Ctrl+L / Ctrl+E / Ctrl+R / Ctrl+J | Align left / center / right / justify |
+| Ctrl+V | Paste with formatting: RTF (Word, Outlook) as-is; HTML (Teams, browsers) converted; pictures (screenshots) as PNG |
+| Ctrl+Shift+V | Paste plain text only |
+| Right-click | Undo, Cut, Copy, Paste, Paste as plain text, Select All |
 
-Clippi needs no administrator rights. It writes only to the user's profile folder and the user's registry hive.
+**How the editor saves**
 
-## Building
+- **Plain text:** a button with no formatting is saved as plain text, exactly as before.
+- **Formatted buttons** are saved as three versions:
+  - plain text, for Notepad and other programs (links written as `text <url>`)
+  - `%RTF:…%`, for Outlook and Word (the box's own RTF)
+  - `%HTML:…%`, for Teams and browsers (generated from the same content)
+- **Unchanged buttons:** a button whose text you didn't change is saved byte-for-byte as it was loaded.
+- **Older buttons** with `%IMG%` pictures, or with `%HTML%` only, open formatted and are converted when their text is edited.
+- **Backup:** the previous file is copied to `.bak` before every save, and the save goes through a temporary file, so a failed save never damages the original.
+- **Placeholder warning:** if `%XXX%` or `%YYY%` has mixed formatting inside it (for example half bold), Clippi can't fill it in the formatted versions, so the status line warns after saving.
 
-### Visual Studio
+---
 
-Open `ClipBoardButtons.sln`, pick a configuration (Debug/Release, x64/x86) and build. The project compiles the .rc file automatically. Output goes to `x64\Release\` (or the matching folder).
+## 6. The button file (JSON)
 
-### Command line (MSBuild)
+The file is a JSON array of objects, one per button, in UTF-8 (UTF-16LE with a BOM is also read). Fields Clippi doesn't know are kept by the editor.
 
-From a **Developer Command Prompt for VS 2022**, in the project folder:
-
-```bat
-msbuild ClipBoardButtons.sln /p:Configuration=Release /p:Platform=x64
-```
-
-### Command line (cl.exe)
-
-From an **x64 Native Tools Command Prompt for VS 2022**:
-
-```bat
-rc ClipBoardButtons.rc
-cl /nologo /EHsc /std:c++17 /O2 /W4 /DUNICODE /D_UNICODE ClipBoardButtons.cpp ClipBoardButtons.res /link /SUBSYSTEM:WINDOWS comctl32.lib shell32.lib advapi32.lib user32.lib gdi32.lib
-```
-
-### MinGW-w64
-
-```bat
-windres ClipBoardButtons.rc -O coff -o res.o
-g++ -std=c++17 -O2 -municode -mwindows ClipBoardButtons.cpp res.o -o ClipBoardButtons.exe -lcomctl32 -lshell32 -ladvapi32 -lgdi32
-```
-
-MinGW ignores the `#pragma comment` lines, so the modern-control manifest is not applied and buttons use the classic Windows look.
-
-### Changing the version, author or date
-
-Edit the five `APP_VERSION_*` lines in `resource.h` (the three numbers and the two strings must match) and rebuild. The title bar, the About box and the .exe's Properties > Details tab all update.
-
-The About box's author and date come from `APP_AUTHOR_WSTR` and `APP_DATE_WSTR`, also in `resource.h`. Update the date when you release a new version.
-
-## How the code works
-
-### Code map
-
-`ClipBoardButtons.cpp` is organized top to bottom as follows. Everything except `wWinMain` is inside an anonymous namespace.
-
-| Section | Main functions / types | Responsibility |
+| Field | Required | Meaning |
 |---|---|---|
-| Constants | `kJsonFileName`, `kPlaceholder`, `kAppTitle`, control and menu IDs | Names, IDs and window styles used throughout. |
-| JSON parser | `JsonValue`, `JsonParser`, `JsonError` | Small recursive-descent parser. Errors report line and column. |
-| Button definitions | `ButtonDef`, `ReadTextFile`, `LoadDefinitions` | Reads the file (UTF-8/UTF-16) and builds the button list. |
-| Storage | `StorageFolder`, `CreateDefaultJsonFile`, `FindJsonPath` | Locates the JSON file and creates it from the embedded resource on first run. |
-| Text helpers | `ReplaceAll`, `PrepareText`, `Trim` | Turns `\\n`/`\\t` into real characters, normalizes line breaks to CRLF, inserts the prompt value. |
-| Images and clipboard | `SplitSegments`, `Base64Decode`, `PngSize`, `BuildRtfClipboard`, `BuildHtmlClipboard`, `CopyToClipboard` | Separates text from `%IMG:%` pictures and places text, RTF and HTML on the clipboard. |
-| Input box | `DialogTemplate`, `InputDlgProc`, `PromptForInput` | Builds the prompt dialog in memory (no dialog resource needed). |
-| Main window | `AppState g`, `LayoutButtons`, `ReloadDefinitions`, `OnButtonClicked` | Creates and arranges controls; handles clicks. |
-| Paste | `OnForegroundChanged`, `ConsiderPasteTarget`, `IsShellWindow`, `PasteIntoTarget` | Tracks the last window used before Clippi and pastes into it. |
-| Edit Clips | `OpenEditor`, `OnEditorExited`, `OnEditorClosed`, `StopWatchingEditor`, `GetFileStamp`, `FileChangedSinceLoad` | Opens the file in Notepad, waits for Notepad to close, and reloads if the file changed. |
-| About | `ShowAbout` | Shows the About box with Clippi's icon, version, author and date (`MessageBoxIndirect`). |
-| Always on top | `LoadTopmostSetting`, `SaveTopmostSetting`, `SetTopmost` | Keeps the checkbox, menu check mark and registry value in sync. |
-| Window procedure | `WndProc` | Creates controls on `WM_CREATE`; routes commands and menu items; handles the editor-closed and file-check messages and `WM_ACTIVATEAPP`; draws the About link blue with a hand cursor (`WM_CTLCOLORSTATIC`, `WM_SETCURSOR`). |
-| Entry point | `wWinMain` | DPI setup, font and icon, window creation, message loop. |
+| `buttonText` | yes | Label on the button |
+| `pasteText` | yes | What is copied (markup below) |
+| `group` | no | Group name; empty or missing = "General" |
+| `inputBoxTitle` | no | Title of the first prompt; the answer replaces `%XXX%` |
+| `inputBoxTitle2` | no | Title of the optional second prompt; the answer replaces `%YYY%` |
+| `rawText` | no | `true` = take `pasteText` literally (see below). Written by the editor when needed |
 
-### Startup sequence
+**pasteText markup**
 
-1. `wWinMain` marks the process DPI-aware, reads the screen DPI and creates the UI font.
-2. The window class is registered with the icon from the resources.
-3. The main window is created. Its `WM_CREATE` handler creates the status line, Paste, Edit Clips and Exit buttons, checkbox and menu items, and starts tracking the window in front.
-4. `ReloadDefinitions` calls `FindJsonPath` (creating the file on first run), then `LoadDefinitions`, then `LayoutButtons`.
-5. The saved Always-on-top setting is applied.
-6. The message loop runs. It checks the F5 accelerator first, then `IsDialogMessage` for keyboard navigation.
-
-### What happens when a button is clicked
-
-1. `WndProc` receives `BN_CLICKED`. The button's control ID minus 1000 is its index in the list.
-2. `OnButtonClicked` shows the prompt if the button has an `inputBoxTitle`.
-3. `PrepareText` converts `\\n`/`\\t`, normalizes line breaks and inserts the value. The value goes in last, so it is pasted exactly as typed.
-4. `CopyToClipboard` calls `SplitSegments` to find pictures. It always puts Unicode text on the clipboard; if there is a picture it also adds RTF (picture as a hex-encoded `\pngblip`) and HTML (picture as a `data:` URI with CF_HTML byte offsets).
-5. The status line shows "Copied: …".
-
-### Implementation notes
-
-- **No external dependencies.** JSON parsing, base64 decoding and the dialog template are all hand-written.
-- **Embedded default file.** `ClipBoardButtons.rc` includes the JSON as an `RCDATA` resource. `CreateDefaultJsonFile` writes it with `CREATE_NEW`, which guarantees an existing file is never overwritten.
-- **DPI.** The process is system-DPI aware and all sizes are scaled from 96 DPI with `Scale()`.
-- **Layout.** The window is not resizable; `LayoutButtons` computes the exact client size and resizes the window to fit after every load.
-- **Paste target.** A `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` hook reports every change of the window in front. `ConsiderPasteTarget` keeps the latest visible window that belongs to another process and isn't part of the Windows shell. **Paste** waits for Alt/Ctrl/Shift/Win to be released (so Alt+P doesn't turn into Ctrl+Alt+V), calls `SetForegroundWindow` on the target, waits until it is in front, then sends Ctrl+V with `SendInput`.
-- **Detecting edits.** When the buttons load, Clippi records the file's last-write time and size. **Edit Clips** starts Notepad with `ShellExecuteEx` and registers a thread-pool wait (`RegisterWaitForSingleObject`) on the Notepad process. When the process exits, the wait callback posts `WM_APP_EDITOR_CLOSED` to the window, which compares the file with the recorded values and reloads if they differ. `WM_ACTIVATEAPP` posts `WM_APP_CHECK_FILE` to run the same check whenever Clippi is reactivated. A file that fails to load is recorded too, so its error is shown once per save rather than on every activation.
-- **Clipboard.** Opening the clipboard is retried up to 10 times, 30 ms apart, in case another app is briefly holding it.
-- **Visual styles.** A `#pragma comment(linker, ...)` manifest dependency enables Common Controls 6 (modern button look) under MSVC.
-
-## Troubleshooting
-
-| Problem | Fix |
+| Markup | Meaning |
 |---|---|
-| "JSON error … (line N, column M)" | The file has a syntax error at that position. Common causes are a missing comma between entries, a trailing comma, or an unescaped `"` inside text. |
-| New buttons in a new build don't appear | Your existing file in `Clippi_Storage` is kept. Copy the new entries into it, or delete the file and restart. |
-| Paste goes to the wrong window | Click in the window you want first, then use Clippi. The status line names the window that received the paste. |
-| Paste does nothing in one program | That program may be running as administrator. Windows blocks keystrokes from normal programs to elevated ones; run Clippi as administrator too, or paste with Ctrl+V. |
-| Buttons didn't update after editing | Make sure the file was saved. Switch back to Clippi or press F5 to reload. |
-| Picture doesn't paste | The target is a plain-text field, or the `%IMG:` data isn't a valid PNG (invalid pictures are silently dropped). |
-| Picture pastes as an attachment in Teams | Teams sometimes uploads pasted pictures. This is Teams behavior. |
-| Rich text looks different from the rest of my email | Pasted rich text uses Calibri 11 pt. Change `kRichFontCss`, `kRichFontRtf` and `kRichFontHalfPoints` in the code to match. |
-| `&` in a button label shows as an underline | Windows treats `&` as a keyboard shortcut marker. Use `&&` in `buttonText` to show a literal `&`. |
-| `msbuild` or `cl` is "not recognized" | Use a Developer Command Prompt, or run `vcvars64.bat` first. |
+| `\\n`, `\\t` (in the JSON file) | Line break, tab |
+| `%XXX%`, `%YYY%` | Replaced by the prompt answers (also inside RTF and HTML, escaped for each format) |
+| `%IMG:<base64 PNG>%` | Picture; Clippi builds RTF and HTML versions around it (Calibri 11 pt). Older format, still supported |
+| `%RTF:<base64>%` | Ready-made RTF document for Outlook and Word |
+| `%HTML:<base64>%` | Ready-made UTF-8 HTML fragment for Teams and browsers |
 
-## Known limitations
+The text outside the tokens is always the plain-text version. Line breaks at the end are not copied.
 
-- A literal backslash followed by `n` or `t` (for example, `C:\new`) is always converted to a line break or tab.
-- Values typed into prompts are not saved between sessions.
-- The window is scaled for the primary display's DPI; on a second monitor with different scaling it may look slightly blurry.
-- Pictures must be PNG.
-- Paste can't type into programs running as administrator unless Clippi runs as administrator too.
-- Paste pastes at the target window's current cursor position; it can't choose a particular text box.
-- Edit Clips always uses Notepad. The `%IMG:` picture data appears as one very long line there.
-- Esc does not close the window (by design, to avoid accidental exits).
+**rawText.** Normally the two characters `\n` mean a line break, so text such as `\\server\tools\new` would turn into a tab and a line break. With `"rawText": true` the text is copied exactly as written, and line breaks are ordinary JSON line breaks. The editor sets this automatically when the text contains a literal `\n` or `\t`.
+
+Example:
+
+```json
+{
+    "group": "Chat",
+    "buttonText": "Ask user: Are you ready for remote",
+    "pasteText": "Are you ready for me to remote into your PC and install %XXX%?\\n\\nNOTE: ...",
+    "inputBoxTitle": "Software Name"
+}
+```
+
+**What goes on the clipboard**
+
+| Clipboard format | Used by | Contents |
+|---|---|---|
+| `CF_UNICODETEXT` | Notepad, command prompt, most programs | Plain text, CRLF line breaks |
+| `Rich Text Format` | Outlook, Word | `%RTF%` token, or built from text + `%IMG%` |
+| `HTML Format` (CF_HTML) | Teams, browsers, web mail | `%HTML%` token, or built from text + `%IMG%` |
+
+---
+
+## 7. How the code is organized
+
+Both programs are single-file, pure Win32 applications with no external libraries. They share `resource.h` and the JSON rules.
+
+### ClipBoardButtons.cpp (Clippi)
+
+| Section | Contents |
+|---|---|
+| JSON parser | `JsonValue`, `JsonParser`: objects, arrays, strings, numbers, literals; errors report line and column |
+| Button definitions | `ButtonDef`, `ReadTextFile` (UTF-8/UTF-16/ANSI), `LoadDefinitions`, `FindJsonPath`, `CreateDefaultJsonFile` (writes the embedded RCDATA once) |
+| Text helpers | `ReplaceAll`, `ReplacePlaceholders` (one pass, so typed text is never re-replaced), `PrepareText` (`\n`/`\t` conversion, CRLF, placeholders) |
+| Rich content | `SplitSegments` (finds `%IMG%`/`%RTF%`/`%HTML%`), `BuildRtfDocument`, `BuildHtmlFragment`, `WrapCfHtml` (CF_HTML header with byte offsets), `CopyToClipboard` |
+| Input box | `DialogTemplate` builds the prompt dialog in memory, so no dialog resource is needed |
+| Window | Groups pane, button grid (`LayoutWindow`, `ShowGroupButtons`), Always on top, About |
+| Editor tracking | `OpenEditor`, `RegisterWaitForSingleObject` on the editor process (tagged with a launch number), reload when the file's time or size changes |
+| Paste | `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` remembers the previous window; `PasteIntoTarget` waits for modifier keys to be released and sends Ctrl+V with `SendInput` |
+| DPI | Per-monitor v2 via run-time lookup of `SetProcessDpiAwarenessContext`, `GetDpiForWindow`, `GetSystemMetricsForDpi`, `AdjustWindowRectExForDpi`; `WM_DPICHANGED` rebuilds fonts and layout |
+
+### ClippiEditor.cpp (Clippi Editor)
+
+| Section | Contents |
+|---|---|
+| JSON | Same parser as Clippi, plus a pretty-printing writer (4-space indent) |
+| Helpers | Files, UTF-8, Base64, PNG/JPEG size, CF_HTML fragment extraction |
+| Pictures | WIC: any picture file → PNG, PNG encoding; GDI: draws metafiles (EMF/WMF) and DIBs into a PNG |
+| Document model | `Fmt`, `Run`, `Para`, `Doc`: text runs with bold/italic/underline/strike, font, size, color, highlight and link; line breaks; PNG/JPEG pictures; paragraph alignment |
+| Converters | `RtfToDoc` (reads what Rich Edit, Word and Outlook write), `HtmlToDoc` (browser-style whitespace, entities, CSS, lists, `data:` images), `DocToRtf`, `DocToHtml`, `DocToPlain`, `IsPlainDoc` |
+| Clip model | `ClipFromJson`, `ClipToJson` (unchanged clips are written exactly as loaded; `rawText` handling; unknown fields kept) |
+| Rich Edit box | Stream in/out, default Calibri 11 pt, `CommitBox` (decides plain vs formatted), toolbar actions, special paste (HTML, pictures), context menu |
+| Window | Layout, list and field handling, accelerators, save with temp file + `.bak` |
+
+### Data flow
+
+```
+ Clippi Editor                           JSON file                      Clippi
+ ─────────────                           ─────────                      ──────
+ Rich Edit box ── RTF ──► RtfToDoc ─┬─► plain text ─┐
+                                    ├─► %RTF:…%  ───┼─► pasteText ─► SplitSegments ─► CF_UNICODETEXT
+                                    └─► %HTML:…% ───┘                               ├► Rich Text Format
+                                                                                     └► HTML Format
+```
+
+---
+
+## 8. Final analysis
+
+### What is done well
+
+- **Safe file handling.** The editor writes to a temporary file, keeps a `.bak` and then replaces the original. Clippi never overwrites an existing button file and reloads only when the file's time or size has changed.
+- **Correct clipboard formats.** CF_HTML offsets are counted in UTF-8 bytes; RTF pictures use `\pngblip` with pixel and twip sizes; clipboard memory is freed on failure; `OpenClipboard` is retried.
+- **Placeholders done carefully.** One-pass replacement, filled in after the `\n` conversion so typed text is pasted verbatim, and escaped separately for RTF and HTML.
+- **No surprises for existing data.** Unedited buttons are saved byte-for-byte; unknown JSON fields are kept; older `%IMG%` buttons still work in Clippi.
+- **No dependencies.** Pure Win32, no runtime installers, no resource dialogs (prompt dialogs are built in memory).
+
+### Findings
+
+| # | Severity | Finding | Recommendation |
+|---|---|---|---|
+| 1 | **Fix** | `resource.h` has `APP_VERSION_MINOR 1` but the strings say `"1.2.0"`. The title bar and About box show 1.2.0, but Explorer's numeric file version (`FILEVERSION`) shows 1.1.0.0. | Set `APP_VERSION_MINOR 2`. Optionally build the strings from the numbers with a stringize macro so they can't drift. |
+| 2 | Medium | The Rich Edit parts of Clippi Editor (the box, toolbar, formatted paste, dialogs) compile but have not been run on Windows. The test environment's Wine would not start. The converters and JSON handling were tested (see section 9). | Run the checklist in section 10 once on a real PC. |
+| 3 | Low | Clippi refuses button files over 16 MB; the editor accepts up to 32 MB. A file with many large pictures could save in the editor but fail to load in Clippi. | Use the same limit in both programs (32 MB). |
+| 4 | Low | Clippi is per-monitor DPI aware; the editor is only system-DPI aware (`SetProcessDPIAware`), so it looks blurry on a second monitor with different scaling. | Port Clippi's DPI helpers to the editor. |
+| 5 | Low | The JSON parser, Base64 and PNG helpers are duplicated in both .cpp files. | Move them to a shared header (e.g. `ClippiCommon.h`). |
+| 6 | Info | Formatted buttons store pictures twice (in the RTF and in the HTML), so picture-heavy buttons make the file larger. The editor warns about pictures over 100 KB. | Keep pictures small (logos of a few KB). |
+| 7 | Info | HTML pasted into the editor is converted to formatting. Text styles, links, lists, alignment and embedded pictures come through; complex layouts (tables, margins) are simplified; pictures that are only web addresses are left out, with a status message. | Expected behavior; mentioned so it isn't a surprise. |
+| 8 | Info | The default button file is embedded in Clippi's .exe. The *Service Desk* URL contains session- and user-specific query parameters (`ovuser` with an encoded e-mail address, `TeamsCID`, `clickparams`). | Before sharing the .exe with others, shorten that URL to its path. |
+| 9 | Info | Button data: typo "Tell user**t**"; labels with trailing or leading spaces ("Ask user: Are you ready for remote ", " RoboCopy (all purpose)", and others); "start with" should be "starts with" in *Get IP Email*, whose scroll-up hint also appears twice; *Close any confidential* has no group, so it is alone in "General". | Tidy in Clippi Editor. |
+
+### Changes made in version 1.2.0 (this review cycle)
+
+**Clippi**
+- **Literal text:** the optional `rawText` field lets a button contain a literal `\n` or `\t`, such as a UNC path.
+- **Optional second prompt:** it can be left empty, and its box is labeled "(optional)".
+- **Paste target:** Paste never targets Clippi Editor (or the Notepad Clippi opened instead).
+- **Labels:** an `&` in a button label is shown as `&` rather than an underline.
+- **HTML spacing:** the HTML version keeps leading spaces and runs of spaces (`&nbsp;`).
+- **Trailing line breaks** are not copied, in any of the three formats.
+- **About link:** measured in the font it is drawn in.
+- **Focus:** reloading keeps the focus in the groups list.
+- **Editor tracking:** a late "editor closed" message from an older editor is ignored.
+- **DPI and monitors:** per-monitor DPI support, and the wrap height uses the monitor the window is on.
+
+**Clippi Editor**
+- **WYSIWYG box:** "Text to paste" is now a Rich Edit box with a formatting toolbar.
+- **Formatted paste:** HTML and screenshots paste with formatting, and Ctrl+Shift+V pastes plain text.
+- **Files:** insert from an RTF/HTML file; export RTF/HTML.
+- **Saving:** formatted buttons are saved as plain + `%RTF%` + `%HTML%`, and unedited buttons are saved exactly as loaded.
+- **Attachments panel removed:** pictures now sit inline in the text instead of as `[[Picture N]]` tags.
+- **Warnings and file names:** the status line warns about placeholders with mixed formatting, and export file names are made safe for Windows.
+
+---
+
+## 9. Testing performed
+
+| Test | Result |
+|---|---|
+| Build both programs with MinGW-w64 g++ 13, `-std=c++17 -Wall` | No errors or warnings |
+| Converter tests (RTF ↔ document ↔ HTML ↔ plain): 37 checks, run under AddressSanitizer and UndefinedBehaviorSanitizer | All pass |
+| Button-file tests: 12 checks, covering the current file (19 buttons) loaded and saved unedited and re-saved after editing, an older `%IMG%` button, an `%HTML%`-only button, `rawText` and split-placeholder detection | All pass; your file is saved byte-for-byte unchanged |
+| Rich Edit box, toolbar, clipboard paste, dialogs on real Windows | **Not yet tested** (see finding 2) |
+
+---
+
+## 10. Checklist for the first run on Windows
+
+1. Build both projects and put the two .exe files in one folder.
+2. Start Clippi. The groups and buttons from your file should appear. Press a button with a prompt, then Paste into Notepad.
+3. Press **Edit Clips**. Pick a button, select a word, press **B**, then **Save**. The list should show `[formatted]`.
+4. Back in Clippi (it reloads automatically), press that button and paste into **Outlook** (bold), **Teams** (bold) and **Notepad** (plain).
+5. In the editor, copy some formatted text from Teams or a web page and paste it into the box with Ctrl+V. Then paste a screenshot (Win+Shift+S, then Ctrl+V).
+6. Insert a link (Link…) and a picture (Picture…), save, and paste the button into Outlook and Teams.
+7. Move the Clippi window to a monitor with different scaling; it should re-lay itself out sharply.
+8. Check Explorer › Properties › Details for both .exe files after fixing finding 1.
