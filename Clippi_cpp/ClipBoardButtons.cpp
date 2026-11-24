@@ -1,9 +1,11 @@
-// ClipBoardButtons.cpp  (Clippi) - version 1.0.0 (see APP_VERSION_* in resource.h)
+// ClipBoardButtons.cpp  (Clippi) - version from APP_VERSION_* in resource.h
 //
 // Reads ClipBoardButtonDefinitions.json and shows one push button per entry,
 // labeled with "buttonText". Clicking a button copies "pasteText" to the
 // clipboard. If "inputBoxTitle" is non-empty, the user is prompted first and
-// the answer replaces every %XXX% in the text.
+// the answer replaces every %XXX% in the text. "inputBoxTitle2" works the
+// same way for %YYY% (asked second, after inputBoxTitle). The first answer is
+// required; the second may be left empty.
 //
 // The button definitions are always loaded from
 //   %USERPROFILE%\Clippi_Storage\ClipBoardButtonDefinitions.json
@@ -13,21 +15,46 @@
 //
 // pasteText markup:
 //   \\n  \\t        Line break / tab (written with a double backslash in the JSON)
-//   %XXX%          Replaced by the answer typed into the input box
+//   %XXX%          Replaced by the answer typed into the inputBoxTitle box
+//   %YYY%          Replaced by the answer typed into the inputBoxTitle2 box
 //   %IMG:<base64>% A PNG picture. The clipboard then also gets RTF (Outlook,
 //                  Word) and HTML (Teams, browsers) versions that include the
 //                  picture; plain-text apps get the text without it.
+//   %RTF:<base64>% A ready-made RTF document (e.g. a formatted signature),
+//                  put on the clipboard as-is for Outlook and Word.
+//   %HTML:<base64>% A ready-made HTML fragment, put on the clipboard as-is
+//                  for Teams, browsers and web mail.
+//   Line breaks at the end of the text are not copied.
+//
+// "rawText": true  (optional, written by Clippi Editor when needed)
+//   pasteText is copied literally: \n and \t are NOT turned into a line break
+//   or tab, so text such as \\server\tools\new pastes exactly as written.
+//   Line breaks are then ordinary JSON line breaks ("\n" with one backslash).
+//
+// Groups:
+//   Each entry may have a "group" (e.g. "Remote Support"). Entries without
+//   one go into "General". Groups are listed in the order they first appear
+//   in the JSON; entries of a group don't need to be next to each other.
 //
 // Window:
-//   Buttons        One per JSON entry, sized to the longest label; wraps into
-//                  extra columns if the list is taller than 80% of the screen.
+//   Groups pane    List on the left. Selecting a group shows its buttons.
+//                  Ctrl+Tab / Ctrl+Shift+Tab (or Ctrl+PgDn / Ctrl+PgUp)
+//                  switch groups from anywhere. The last group used is
+//                  remembered in HKCU\Software\ClipBoardButtons\LastGroup.
+//   Buttons        One per JSON entry in the selected group, sized to the
+//                  longest label; wraps into extra columns if the group is
+//                  taller than 80% of the screen. The window is sized for the
+//                  largest group, so it doesn't jump when you switch.
 //   Always on top  Checkbox (Alt+T) or System menu. Remembered in
 //                  HKCU\Software\ClipBoardButtons\AlwaysOnTop.
 //   Paste          Switches back to the window you used before Clippi and
 //                  presses Ctrl+V there, pasting what's on the clipboard (Alt+P).
-//   Edit Clips     Opens the JSON file in Notepad (Alt+E). When Notepad is
-//                  closed, or when you switch back to Clippi, the buttons are
-//                  reloaded if the file was saved with changes.
+//                  Clippi Editor's window is never used as the target.
+//   Edit Clips     Opens the JSON file in Clippi Editor (ClippiEditor.exe in
+//                  the same folder as Clippi), or in Notepad if it isn't there
+//                  (Alt+E). When the editor is closed, or when you switch back
+//                  to Clippi, the buttons are reloaded if the file was saved
+//                  with changes.
 //   Exit           Closes the program (Alt+X).
 //   Status line    Shows how many buttons loaded / what was last copied.
 //   F5             Reloads the JSON file (also System menu > Reload Buttons).
@@ -35,6 +62,8 @@
 //                  About Clippi). Shows the author, version and date, which
 //                  are set in resource.h.
 //   Title bar      "Clippi" plus the version from resource.h.
+//   High DPI       Per-monitor aware: the window is re-laid out at the new
+//                  scale when it is moved to a monitor with a different DPI.
 //
 // Pure Win32 / C++17, no external libraries.
 
@@ -67,7 +96,8 @@
 namespace {
 
 constexpr wchar_t kJsonFileName[] = L"ClipBoardButtonDefinitions.json";
-constexpr wchar_t kPlaceholder[]  = L"%XXX%";
+constexpr wchar_t kPlaceholder[]  = L"%XXX%";  // answer to inputBoxTitle
+constexpr wchar_t kPlaceholder2[] = L"%YYY%";  // answer to inputBoxTitle2
 constexpr wchar_t kWndClass[]     = L"ClipBoardButtonsWnd";
 constexpr wchar_t kAppTitle[]     = L"Clippi " APP_VERSION_WSTR;
 
@@ -78,6 +108,10 @@ constexpr int  IDC_TOPMOST      = 903;
 constexpr int  IDC_EDIT         = 904;
 constexpr int  IDC_PASTE        = 905;
 constexpr int  IDC_ABOUT        = 906;
+constexpr int  IDC_GROUPS       = 907;   // group list (navigation pane)
+constexpr int  IDA_NEXT_GROUP   = 910;   // Ctrl+Tab / Ctrl+PgDn
+constexpr int  IDA_PREV_GROUP   = 911;   // Ctrl+Shift+Tab / Ctrl+PgUp
+constexpr wchar_t kDefaultGroup[] = L"General"; // group for entries without "group"
 constexpr UINT WM_APP_EDITOR_CLOSED = WM_APP + 1; // posted when the editor process exits
 constexpr UINT WM_APP_CHECK_FILE    = WM_APP + 2; // re-check the JSON file for changes
 constexpr wchar_t kRegKey[]     = L"Software\\ClipBoardButtons"; // HKCU, saves "AlwaysOnTop"
@@ -260,8 +294,13 @@ private:
 struct ButtonDef {
     std::wstring text;        // buttonText
     std::wstring pasteText;   // pasteText
-    std::wstring inputTitle;  // inputBoxTitle (empty = no prompt)
+    std::wstring inputTitle;  // inputBoxTitle (empty = no prompt)  -> %XXX%
+    std::wstring inputTitle2; // inputBoxTitle2 (empty = no prompt) -> %YYY%
+    std::wstring group;       // group (never empty: defaults to kDefaultGroup)
+    bool rawText = false;     // rawText: pasteText is literal (no \n / \t conversion)
 };
+
+std::wstring Trim(const std::wstring& s);
 
 std::wstring GetString(const JsonValue& obj, const wchar_t* key) {
     const JsonValue* v = obj.Find(key);
@@ -341,7 +380,12 @@ bool LoadDefinitions(const std::wstring& path, std::vector<ButtonDef>& defs, std
         d.text       = GetString(item, L"buttonText");
         d.pasteText  = GetString(item, L"pasteText");
         d.inputTitle = GetString(item, L"inputBoxTitle");
+        d.inputTitle2 = GetString(item, L"inputBoxTitle2");
+        d.group      = Trim(GetString(item, L"group"));
+        const JsonValue* raw = item.Find(L"rawText");
+        d.rawText    = raw && raw->type == JsonValue::Bool && raw->boolean;
         if (d.text.empty()) d.text = L"(unnamed)";
+        if (d.group.empty()) d.group = kDefaultGroup;
         defs.push_back(std::move(d));
     }
     return true;
@@ -405,17 +449,36 @@ void ReplaceAll(std::wstring& s, const std::wstring& from, const std::wstring& t
         s.replace(pos, from.size(), to);
 }
 
+// Replaces %XXX% with x and %YYY% with y in one pass, so text typed into one
+// box is never changed by the other replacement.
+template <class Str>
+Str ReplacePlaceholders(const Str& s, const Str& xxx, const Str& x, const Str& yyy, const Str& y) {
+    Str out;
+    size_t pos = 0;
+    for (;;) {
+        const size_t a = s.find(xxx, pos), b = s.find(yyy, pos);
+        const size_t at = std::min(a, b);
+        if (at == Str::npos) { out.append(s, pos, Str::npos); return out; }
+        out.append(s, pos, at - pos);
+        out += (at == a) ? x : y;
+        pos = at + ((at == a) ? xxx.size() : yyy.size());
+    }
+}
+
 // Turns the stored pasteText into what goes on the clipboard:
-//   - literal "\n" / "\t" sequences (written as "\\n" in the JSON) become a newline / tab
+//   - literal "\n" / "\t" sequences (written as "\\n" in the JSON) become a newline / tab,
+//     unless the entry has "rawText": true (then the text is taken literally)
 //   - all line breaks are normalized to CRLF
-//   - %XXX% is replaced by the user's input (done last, so input is pasted verbatim)
-std::wstring PrepareText(std::wstring text, const std::wstring& input) {
-    ReplaceAll(text, L"\\n", L"\n");
-    ReplaceAll(text, L"\\t", L"\t");
+//   - %XXX% / %YYY% are replaced by the user's input (done last, so input is pasted verbatim)
+std::wstring PrepareText(std::wstring text, bool rawText, const std::wstring& input,
+                         const std::wstring& input2) {
+    if (!rawText) {
+        ReplaceAll(text, L"\\n", L"\n");
+        ReplaceAll(text, L"\\t", L"\t");
+    }
     text.erase(std::remove(text.begin(), text.end(), L'\r'), text.end());
     ReplaceAll(text, L"\n", L"\r\n");
-    ReplaceAll(text, kPlaceholder, input);
-    return text;
+    return ReplacePlaceholders<std::wstring>(text, kPlaceholder, input, kPlaceholder2, input2);
 }
 
 std::wstring Trim(const std::wstring& s) {
@@ -426,22 +489,29 @@ std::wstring Trim(const std::wstring& s) {
 }
 
 // ============================================================================
-// Images in pasteText
+// Rich content in pasteText
 // ----------------------------------------------------------------------------
-// A pasteText may contain one or more  %IMG:<base64-encoded PNG>%  tokens.
-// When it does, the clipboard gets three formats at once and the target app
-// picks the richest one it understands:
-//   - Rich Text Format : text + picture (Outlook, Word)
-//   - HTML Format      : text + picture (Teams, browsers, web mail)
-//   - Unicode text     : text only, picture left out (Notepad, terminals)
-// Without an image token only plain text is copied, as before.
+// Besides plain text, a pasteText may contain these tokens (base64 inside):
+//   %IMG:<PNG>%    A picture. Clippi builds RTF and HTML versions of the whole
+//                  clip with the picture in place (text in Calibri 11 pt).
+//   %RTF:<RTF>%    A complete, ready-made RTF document, such as a formatted
+//                  signature saved from Word or Outlook. It goes on the
+//                  clipboard as-is and is used by Outlook and Word.
+//   %HTML:<HTML>%  A ready-made UTF-8 HTML fragment. It goes on the clipboard
+//                  as-is and is used by Teams, browsers and web mail.
+// The text outside the tokens is always the plain-text version (Notepad etc.).
+// A ready-made RTF/HTML takes priority over one built from %IMG% tokens, and
+// %XXX% / %YYY% inside it are replaced too (escaped for that format).
+// Without any token, only plain text is copied.
 // ============================================================================
+enum class SegKind { Text, Image, Rtf, Html };
+
 struct PasteSegment {
-    bool isImage = false;
-    std::wstring text;               // text segment
-    std::wstring base64;             // image segment: original base64
-    std::vector<unsigned char> png;  // image segment: decoded PNG bytes
-    int width = 0, height = 0;       // image segment: pixels, from the PNG header
+    SegKind kind = SegKind::Text;
+    std::wstring text;               // Text: the text
+    std::wstring base64;             // Image: original base64 (reused in the HTML)
+    std::vector<unsigned char> data; // Image: PNG bytes; Rtf/Html: document bytes
+    int width = 0, height = 0;       // Image: pixels, from the PNG header
 };
 
 std::vector<unsigned char> Base64Decode(const std::wstring& s) {
@@ -477,24 +547,40 @@ bool PngSize(const std::vector<unsigned char>& png, int& w, int& h) {
     return w > 0 && h > 0;
 }
 
+// Splits prepared text into plain-text pieces and %IMG:% / %RTF:% / %HTML:% tokens.
 std::vector<PasteSegment> SplitSegments(const std::wstring& text) {
-    static const std::wstring kOpen = L"%IMG:";
+    static const struct { const wchar_t* open; SegKind kind; } kTokens[] = {
+        { L"%IMG:",  SegKind::Image },
+        { L"%RTF:",  SegKind::Rtf   },
+        { L"%HTML:", SegKind::Html  },
+    };
     std::vector<PasteSegment> segs;
     size_t pos = 0;
     for (;;) {
-        const size_t a = text.find(kOpen, pos);
-        const size_t b = (a == std::wstring::npos) ? a : text.find(L'%', a + kOpen.size());
-        if (b == std::wstring::npos) {           // no (complete) token left
+        // Earliest complete token (opening marker plus a closing '%')
+        size_t a = std::wstring::npos, b = std::wstring::npos, openLen = 0;
+        SegKind kind = SegKind::Text;
+        for (const auto& t : kTokens) {
+            const size_t at = text.find(t.open, pos);
+            if (at == std::wstring::npos || at >= a) continue;
+            const size_t len = wcslen(t.open);
+            const size_t end = text.find(L'%', at + len);
+            if (end == std::wstring::npos) continue;
+            a = at; b = end; openLen = len; kind = t.kind;
+        }
+        if (a == std::wstring::npos) {
             PasteSegment t; t.text = text.substr(pos); segs.push_back(t);
             break;
         }
         PasteSegment t; t.text = text.substr(pos, a - pos); segs.push_back(t);
 
-        PasteSegment img;
-        img.base64 = text.substr(a + kOpen.size(), b - a - kOpen.size());
-        img.png = Base64Decode(img.base64);
-        img.isImage = PngSize(img.png, img.width, img.height);
-        if (img.isImage) segs.push_back(std::move(img)); // invalid images are dropped
+        PasteSegment s;
+        s.kind = kind;
+        s.base64 = text.substr(a + openLen, b - a - openLen);
+        s.data = Base64Decode(s.base64);
+        const bool valid = (kind == SegKind::Image) ? PngSize(s.data, s.width, s.height)
+                                                    : !s.data.empty();
+        if (valid) segs.push_back(std::move(s)); // invalid tokens are dropped
         pos = b + 1;
     }
     return segs;
@@ -509,38 +595,98 @@ std::string ToUtf8(const std::wstring& w) {
     return s;
 }
 
-// Font used for the rich (HTML/RTF) versions of the text
+// Text -> HTML (UTF-8): escapes special characters, line breaks become <br>.
+// A space at the start of a line or after another space becomes &nbsp;, so
+// indentation and runs of spaces survive (HTML would collapse them).
+std::string HtmlEscape(const std::wstring& text) {
+    std::wstring out;
+    wchar_t prev = L'\n';
+    for (wchar_t c : text) {
+        const wchar_t before = prev;
+        if (c != L'\r') prev = c;
+        switch (c) {
+        case L' ':
+            out += (before == L' ' || before == L'\n') ? L"&nbsp;" : L" ";
+            break;
+        case L'&':  out += L"&amp;";  break;
+        case L'<':  out += L"&lt;";   break;
+        case L'>':  out += L"&gt;";   break;
+        case L'"':  out += L"&quot;"; break;
+        case L'\t': out += L"&nbsp;&nbsp;&nbsp;&nbsp;"; break;
+        case L'\r': break;
+        case L'\n': out += L"<br>\r\n"; break;
+        default:    out += c; break;
+        }
+    }
+    return ToUtf8(out);
+}
+
+// Text -> RTF: escapes \ { }, line breaks become \par, non-ASCII becomes \uN?
+std::string RtfEscape(const std::wstring& text) {
+    std::string out;
+    for (wchar_t c : text) {
+        switch (c) {
+        case L'\\': out += "\\\\"; break;
+        case L'{':  out += "\\{";  break;
+        case L'}':  out += "\\}";  break;
+        case L'\t': out += "\\tab "; break;
+        case L'\r': break;
+        case L'\n': out += "\\par\r\n"; break;
+        default:
+            if (c < 128) out += static_cast<char>(c);
+            else out += "\\u" + std::to_string(static_cast<short>(c)) + "?";
+        }
+    }
+    return out;
+}
+
+// Font used when Clippi builds the rich versions itself (for %IMG% clips)
 constexpr char kRichFontCss[] = "font-family:Calibri,Arial,sans-serif;font-size:11pt";
 constexpr char kRichFontRtf[] = "Calibri";
 constexpr int  kRichFontHalfPoints = 22; // 11 pt
 
-std::string BuildHtmlClipboard(const std::vector<PasteSegment>& segs) {
-    std::wstring frag = L"<div style=\"" + std::wstring(kRichFontCss, kRichFontCss + strlen(kRichFontCss)) + L"\">";
+// HTML fragment (UTF-8) for a clip made of text and %IMG% pictures
+std::string BuildHtmlFragment(const std::vector<PasteSegment>& segs) {
+    std::string frag = std::string("<div style=\"") + kRichFontCss + "\">";
     for (const auto& s : segs) {
-        if (s.isImage) {
-            frag += L"<img src=\"data:image/png;base64," + s.base64 + L"\" width=\"" +
-                    std::to_wstring(s.width) + L"\" height=\"" + std::to_wstring(s.height) + L"\" alt=\"\">";
-            continue;
-        }
-        for (size_t i = 0; i < s.text.size(); ++i) {
-            const wchar_t c = s.text[i];
-            switch (c) {
-            case L'&':  frag += L"&amp;";  break;
-            case L'<':  frag += L"&lt;";   break;
-            case L'>':  frag += L"&gt;";   break;
-            case L'"':  frag += L"&quot;"; break;
-            case L'\t': frag += L"&nbsp;&nbsp;&nbsp;&nbsp;"; break;
-            case L'\r': break;
-            case L'\n': frag += L"<br>\r\n"; break;
-            default:    frag += c; break;
-            }
+        if (s.kind == SegKind::Text) {
+            frag += HtmlEscape(s.text);
+        } else if (s.kind == SegKind::Image) {
+            frag += "<img src=\"data:image/png;base64," + ToUtf8(s.base64) + "\" width=\"" +
+                    std::to_string(s.width) + "\" height=\"" + std::to_string(s.height) + "\" alt=\"\">";
         }
     }
-    frag += L"</div>";
+    return frag + "</div>";
+}
 
-    // CF_HTML: a header with byte offsets (into the UTF-8 data) of the HTML and the fragment
+// RTF document for a clip made of text and %IMG% pictures
+std::string BuildRtfDocument(const std::vector<PasteSegment>& segs) {
+    std::string rtf = "{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0\\fswiss " +
+                      std::string(kRichFontRtf) + ";}}\\f0\\fs" +
+                      std::to_string(kRichFontHalfPoints) + " ";
+    static const char kHex[] = "0123456789abcdef";
+    for (const auto& s : segs) {
+        if (s.kind == SegKind::Text) {
+            rtf += RtfEscape(s.text);
+        } else if (s.kind == SegKind::Image) {
+            // picw/pich in pixels, picwgoal/pichgoal in twips (15 twips per pixel at 96 DPI)
+            rtf += "{\\pict\\pngblip\\picw" + std::to_string(s.width) + "\\pich" + std::to_string(s.height) +
+                   "\\picwgoal" + std::to_string(s.width * 15) + "\\pichgoal" + std::to_string(s.height * 15) + "\r\n";
+            for (size_t i = 0; i < s.data.size(); ++i) {
+                rtf += kHex[s.data[i] >> 4];
+                rtf += kHex[s.data[i] & 0x0F];
+                if (i % 64 == 63) rtf += "\r\n";
+            }
+            rtf += "}";
+        }
+    }
+    return rtf + "}";
+}
+
+// Wraps a UTF-8 HTML fragment in the CF_HTML clipboard format: a header with
+// byte offsets of the HTML document and of the fragment inside it.
+std::string WrapCfHtml(const std::string& fragment) {
     const std::string pre  = "<html><body>\r\n<!--StartFragment-->";
-    const std::string body = ToUtf8(frag);
     const std::string post = "<!--EndFragment-->\r\n</body></html>";
     const char* headerFmt = "Version:0.9\r\nStartHTML:%010zu\r\nEndHTML:%010zu\r\n"
                             "StartFragment:%010zu\r\nEndFragment:%010zu\r\n";
@@ -549,46 +695,10 @@ std::string BuildHtmlClipboard(const std::vector<PasteSegment>& segs) {
                                                           size_t(0), size_t(0), size_t(0), size_t(0)));
     const size_t startHtml = headerLen;
     const size_t startFrag = startHtml + pre.size();
-    const size_t endFrag   = startFrag + body.size();
+    const size_t endFrag   = startFrag + fragment.size();
     const size_t endHtml   = endFrag + post.size();
     snprintf(header, sizeof(header), headerFmt, startHtml, endHtml, startFrag, endFrag);
-    return std::string(header) + pre + body + post;
-}
-
-std::string BuildRtfClipboard(const std::vector<PasteSegment>& segs) {
-    std::string rtf = "{\\rtf1\\ansi\\ansicpg1252\\deff0{\\fonttbl{\\f0\\fswiss " +
-                      std::string(kRichFontRtf) + ";}}\\f0\\fs" +
-                      std::to_string(kRichFontHalfPoints) + " ";
-    static const char kHex[] = "0123456789abcdef";
-    for (const auto& s : segs) {
-        if (s.isImage) {
-            // picw/pich in pixels, picwgoal/pichgoal in twips (15 twips per pixel at 96 DPI)
-            rtf += "{\\pict\\pngblip\\picw" + std::to_string(s.width) + "\\pich" + std::to_string(s.height) +
-                   "\\picwgoal" + std::to_string(s.width * 15) + "\\pichgoal" + std::to_string(s.height * 15) + "\r\n";
-            for (size_t i = 0; i < s.png.size(); ++i) {
-                rtf += kHex[s.png[i] >> 4];
-                rtf += kHex[s.png[i] & 0x0F];
-                if (i % 64 == 63) rtf += "\r\n";
-            }
-            rtf += "}";
-            continue;
-        }
-        for (wchar_t c : s.text) {
-            switch (c) {
-            case L'\\': rtf += "\\\\"; break;
-            case L'{':  rtf += "\\{";  break;
-            case L'}':  rtf += "\\}";  break;
-            case L'\t': rtf += "\\tab "; break;
-            case L'\r': break;
-            case L'\n': rtf += "\\par\r\n"; break;
-            default:
-                if (c < 128) rtf += static_cast<char>(c);
-                else rtf += "\\u" + std::to_string(static_cast<short>(c)) + "?";
-            }
-        }
-    }
-    rtf += "}";
-    return rtf;
+    return std::string(header) + pre + fragment + post;
 }
 
 // Puts a copy of the bytes on the (already open) clipboard.
@@ -605,16 +715,39 @@ bool SetClipboardBytes(UINT format, const void* data, size_t bytes) {
     return ok;
 }
 
-bool CopyToClipboard(HWND owner, const std::wstring& text) {
-    const std::vector<PasteSegment> segs = SplitSegments(text);
+// text:   the prepared pasteText (escapes converted, %XXX% / %YYY% already filled in)
+// input:  the value typed into the first prompt, used for %XXX% inside %RTF%/%HTML%
+// input2: the value typed into the second prompt, used for %YYY% inside %RTF%/%HTML%
+bool CopyToClipboard(HWND owner, const std::wstring& text, const std::wstring& input,
+                     const std::wstring& input2) {
+    std::vector<PasteSegment> segs = SplitSegments(text);
     std::wstring plain;
+    std::string rtf, html; // ready-made rich versions, if the clip has them
     bool hasImage = false;
     for (const auto& s : segs) {
-        if (s.isImage) hasImage = true; else plain += s.text;
+        switch (s.kind) {
+        case SegKind::Text:  plain += s.text; break;
+        case SegKind::Image: hasImage = true; break;
+        case SegKind::Rtf:   if (rtf.empty())  rtf.assign(s.data.begin(), s.data.end());  break;
+        case SegKind::Html:  if (html.empty()) html.assign(s.data.begin(), s.data.end()); break;
+        }
     }
-    if (hasImage) { // an image at the end would otherwise leave a dangling line break
-        while (!plain.empty() && (plain.back() == L'\r' || plain.back() == L'\n')) plain.pop_back();
+    // Line breaks at the end are never copied: they would add blank lines after the
+    // pasted text (and a token at the end would otherwise leave one dangling).
+    while (!plain.empty() && (plain.back() == L'\r' || plain.back() == L'\n')) plain.pop_back();
+    // Same for the text pieces the RTF/HTML versions are built from
+    // (stop at a picture: a line break before a picture belongs to the text)
+    for (auto it = segs.rbegin(); it != segs.rend(); ++it) {
+        if (it->kind == SegKind::Image) break;
+        if (it->kind != SegKind::Text) continue; // %RTF% / %HTML% tokens aren't drawn
+        std::wstring& t = it->text;
+        while (!t.empty() && (t.back() == L'\r' || t.back() == L'\n')) t.pop_back();
+        if (!t.empty()) break;
     }
+    rtf  = ReplacePlaceholders<std::string>(rtf,  "%XXX%", RtfEscape(input),  "%YYY%", RtfEscape(input2));
+    html = ReplacePlaceholders<std::string>(html, "%XXX%", HtmlEscape(input), "%YYY%", HtmlEscape(input2));
+    if (rtf.empty() && hasImage)  rtf  = BuildRtfDocument(segs);
+    if (html.empty() && hasImage) html = BuildHtmlFragment(segs);
 
     bool opened = false;
     for (int attempt = 0; attempt < 10 && !opened; ++attempt) {
@@ -625,11 +758,11 @@ bool CopyToClipboard(HWND owner, const std::wstring& text) {
 
     EmptyClipboard();
     const bool ok = SetClipboardBytes(CF_UNICODETEXT, plain.c_str(), (plain.size() + 1) * sizeof(wchar_t));
-    if (ok && hasImage) {
-        const std::string rtf  = BuildRtfClipboard(segs);
-        const std::string html = BuildHtmlClipboard(segs);
-        SetClipboardBytes(RegisterClipboardFormatW(L"Rich Text Format"), rtf.c_str(),  rtf.size() + 1);
-        SetClipboardBytes(RegisterClipboardFormatW(L"HTML Format"),      html.c_str(), html.size() + 1);
+    if (ok && !rtf.empty())
+        SetClipboardBytes(RegisterClipboardFormatW(L"Rich Text Format"), rtf.c_str(), rtf.size() + 1);
+    if (ok && !html.empty()) {
+        const std::string cf = WrapCfHtml(html);
+        SetClipboardBytes(RegisterClipboardFormatW(L"HTML Format"), cf.c_str(), cf.size() + 1);
     }
     CloseClipboard();
     return ok;
@@ -679,7 +812,8 @@ private:
 
 struct InputDlgData {
     std::wstring title;
-    std::wstring value; // in: initial text, out: entered text
+    std::wstring value;      // in: initial text, out: entered text
+    bool allowEmpty = false; // true: OK with an empty box is accepted
 };
 
 INT_PTR CALLBACK InputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
@@ -688,7 +822,8 @@ INT_PTR CALLBACK InputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         auto* data = reinterpret_cast<InputDlgData*>(lp);
         SetWindowLongPtrW(dlg, DWLP_USER, lp);
         SetWindowTextW(dlg, data->title.c_str());
-        SetDlgItemTextW(dlg, IDC_INPUT_LABEL, (L"Enter " + data->title + L":").c_str());
+        SetDlgItemTextW(dlg, IDC_INPUT_LABEL,
+                        (L"Enter " + data->title + (data->allowEmpty ? L" (optional):" : L":")).c_str());
         HWND edit = GetDlgItem(dlg, IDC_INPUT_EDIT);
         SetWindowTextW(edit, data->value.c_str());
         SendMessageW(edit, EM_SETSEL, 0, -1);
@@ -705,7 +840,7 @@ INT_PTR CALLBACK InputDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             GetWindowTextW(edit, &value[0], len + 1);
             value.resize(static_cast<size_t>(len));
             value = Trim(value);
-            if (value.empty()) {
+            if (value.empty() && !data->allowEmpty) {
                 MessageBeep(MB_ICONWARNING);
                 SetFocus(edit);
                 return TRUE;
@@ -747,8 +882,17 @@ struct AppState {
     bool topmost = false;
     std::wstring jsonPath;
     std::vector<ButtonDef> defs;
-    std::vector<HWND> buttons;
+    std::vector<HWND> buttons;         // buttons of the selected group only
     std::map<std::wstring, std::wstring> lastInput; // remembers last entry per prompt
+
+    // Groups / navigation pane
+    HWND groupList = nullptr;          // list box on the left
+    std::vector<std::wstring> groups;  // in order of first appearance in the JSON
+    size_t group = 0;                  // index of the selected group
+    std::wstring groupName;            // its name (kept across reloads)
+
+    // Button grid geometry, computed by LayoutWindow, used by ShowGroupButtons
+    int gridX = 0, gridY = 0, gridBtnW = 0, gridBtnH = 0, gridGap = 0, gridMaxRows = 1;
 
     // "Edit Clips" support
     HWND editButton = nullptr;
@@ -761,34 +905,224 @@ struct AppState {
     // "About" link
     HWND aboutLink = nullptr;
     HFONT linkFont = nullptr;          // underlined copy of the UI font
-    HANDLE editorProcess = nullptr;    // Notepad process we launched (if still running)
+    HANDLE editorProcess = nullptr;    // editor process we launched (if still running)
     HANDLE editorWait = nullptr;       // thread-pool wait on that process
+    UINT_PTR editorSession = 0;        // counts editor launches; tags WM_APP_EDITOR_CLOSED
     ULONGLONG editorStartTick = 0;
+    bool editorIsNotepad = false;      // true if ClippiEditor.exe wasn't found
     FILETIME loadedWriteTime{};        // JSON file's last-write time when it was loaded
     ULONGLONG loadedSize = 0;          // ... and its size
     bool haveStamp = false;
+    FILETIME editStartWriteTime{};     // the file's state when the editor was opened
+    ULONGLONG editStartSize = 0;
+    bool haveEditStartStamp = false;
 } g;
 
 int Scale(int v) { return MulDiv(v, g.dpi, 96); }
 
+// ---- Per-monitor DPI ----
+// The *ForDpi functions exist on Windows 10 1607 and later; they are looked up
+// at run time so Clippi still starts (system-DPI aware) on older Windows.
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+
+template <typename Fn> Fn User32Proc(const char* name) {
+    return reinterpret_cast<Fn>(reinterpret_cast<void*>(
+        GetProcAddress(GetModuleHandleW(L"user32.dll"), name)));
+}
+
+int g_systemDpi = 96; // DPI the plain (non-ForDpi) metrics are reported in
+
+// Process-wide: per-monitor v2 if available, otherwise system-DPI aware.
+void SetDpiAwareness() {
+    using Fn = BOOL(WINAPI*)(HANDLE);
+    if (auto set = User32Proc<Fn>("SetProcessDpiAwarenessContext")) {
+        // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (DPI_AWARENESS_CONTEXT)-4
+        if (set(reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4)))) return;
+    }
+    SetProcessDPIAware();
+}
+
+int WindowDpi(HWND hwnd) {
+    using Fn = UINT(WINAPI*)(HWND);
+    static const Fn get = User32Proc<Fn>("GetDpiForWindow");
+    const UINT dpi = get ? get(hwnd) : 0;
+    return dpi ? static_cast<int>(dpi) : g_systemDpi;
+}
+
+// GetSystemMetrics at the window's DPI
+int Metric(int index) {
+    using Fn = int(WINAPI*)(int, UINT);
+    static const Fn get = User32Proc<Fn>("GetSystemMetricsForDpi");
+    return get ? get(index, static_cast<UINT>(g.dpi))
+               : MulDiv(GetSystemMetrics(index), g.dpi, g_systemDpi);
+}
+
+// Client rectangle -> window rectangle at the window's DPI
+void AdjustRectForDpi(RECT& rc) {
+    using Fn = BOOL(WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    static const Fn adjust = User32Proc<Fn>("AdjustWindowRectExForDpi");
+    if (!adjust || !adjust(&rc, kMainStyle, FALSE, kMainExStyle, static_cast<UINT>(g.dpi)))
+        AdjustWindowRectEx(&rc, kMainStyle, FALSE, kMainExStyle);
+}
+
+// The Windows message font at the window's DPI
+HFONT CreateUiFont() {
+    using Fn = BOOL(WINAPI*)(UINT, UINT, PVOID, UINT, UINT);
+    static const Fn spiForDpi = User32Proc<Fn>("SystemParametersInfoForDpi");
+    NONCLIENTMETRICSW ncm{};
+    ncm.cbSize = sizeof(ncm);
+    if (spiForDpi && spiForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, static_cast<UINT>(g.dpi)))
+        return CreateFontIndirectW(&ncm.lfMessageFont);
+    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
+        ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight, g.dpi, g_systemDpi);
+        return CreateFontIndirectW(&ncm.lfMessageFont);
+    }
+    return static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+}
+
+// Creates the UI font and the underlined link font for the current g.dpi and
+// gives them to the fixed controls (group buttons get g.font when created).
+// The previous fonts are deleted by the caller once nothing uses them.
+void CreateFonts() {
+    g.font = CreateUiFont();
+    LOGFONTW lf{};
+    GetObjectW(g.font, sizeof(lf), &lf);
+    lf.lfUnderline = TRUE;
+    g.linkFont = CreateFontIndirectW(&lf);
+    for (HWND w : { g.groupList, g.status, g.exitButton, g.editButton, g.pasteButton, g.topmostCheck })
+        if (w) SendMessageW(w, WM_SETFONT, reinterpret_cast<WPARAM>(g.font), TRUE);
+    if (g.aboutLink) SendMessageW(g.aboutLink, WM_SETFONT, reinterpret_cast<WPARAM>(g.linkFont), TRUE);
+}
+
+void DeleteFont(HFONT f) {
+    if (f && f != static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT))) DeleteObject(f);
+}
+
 void SetStatus(const std::wstring& text) { SetWindowTextW(g.status, text.c_str()); }
 
-void LayoutButtons() {
+// ---- Groups (navigation pane) ----
+
+bool LoadLastGroup(std::wstring& name) {
+    wchar_t buf[256] = {};
+    DWORD size = sizeof(buf);
+    if (RegGetValueW(HKEY_CURRENT_USER, kRegKey, L"LastGroup", RRF_RT_REG_SZ,
+                     nullptr, buf, &size) != ERROR_SUCCESS) return false;
+    name = buf;
+    return true;
+}
+
+void SaveLastGroup(const std::wstring& name) {
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegKey, 0, nullptr, 0, KEY_SET_VALUE,
+                        nullptr, &key, nullptr) == ERROR_SUCCESS) {
+        RegSetValueExW(key, L"LastGroup", 0, REG_SZ, reinterpret_cast<const BYTE*>(name.c_str()),
+                       static_cast<DWORD>((name.size() + 1) * sizeof(wchar_t)));
+        RegCloseKey(key);
+    }
+}
+
+// Rebuilds g.groups from g.defs and fills the list box. Keeps the selected
+// group (by name) if it still exists, otherwise selects the first one.
+void RebuildGroups() {
+    g.groups.clear();
+    for (const auto& d : g.defs)
+        if (std::find(g.groups.begin(), g.groups.end(), d.group) == g.groups.end())
+            g.groups.push_back(d.group);
+
+    SendMessageW(g.groupList, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(g.groupList, LB_RESETCONTENT, 0, 0);
+    for (const auto& name : g.groups)
+        SendMessageW(g.groupList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+    SendMessageW(g.groupList, WM_SETREDRAW, TRUE, 0);
+
+    const auto it = std::find(g.groups.begin(), g.groups.end(), g.groupName);
+    g.group = it == g.groups.end() ? 0 : static_cast<size_t>(it - g.groups.begin());
+    if (!g.groups.empty()) g.groupName = g.groups[g.group];
+    SendMessageW(g.groupList, LB_SETCURSEL, g.groups.empty() ? -1 : static_cast<WPARAM>(g.group), 0);
+    InvalidateRect(g.groupList, nullptr, TRUE);
+}
+
+// Creates the buttons of the selected group in the grid set up by LayoutWindow.
+// Button IDs are IDC_FIRST_BUTTON + the entry's index in g.defs.
+void ShowGroupButtons(bool focusFirstButton) {
     for (HWND b : g.buttons) DestroyWindow(b);
     g.buttons.clear();
 
-    // Button width = widest label + padding
-    int maxText = 0;
+    if (g.group < g.groups.size()) {
+        const std::wstring& name = g.groups[g.group];
+        int n = 0;
+        for (size_t i = 0; i < g.defs.size(); ++i) {
+            if (g.defs[i].group != name) continue;
+            const int col = n / g.gridMaxRows, row = n % g.gridMaxRows;
+            ++n;
+            // Buttons treat & as a shortcut marker; && shows a real & ("Q&A" stays "Q&A")
+            std::wstring label = g.defs[i].text;
+            ReplaceAll(label, L"&", L"&&");
+            HWND b = CreateWindowExW(0, L"BUTTON", label.c_str(),
+                                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                                     g.gridX + col * (g.gridBtnW + g.gridGap),
+                                     g.gridY + row * (g.gridBtnH + g.gridGap),
+                                     g.gridBtnW, g.gridBtnH, g.hwnd,
+                                     reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_FIRST_BUTTON + i)),
+                                     g.inst, nullptr);
+            SendMessageW(b, WM_SETFONT, reinterpret_cast<WPARAM>(g.font), TRUE);
+            g.buttons.push_back(b);
+        }
+    }
+
+    // New windows go to the end of the Tab order; move the bottom row after
+    // them again, so the order is: groups, buttons, checkbox, Paste, Edit Clips, Exit.
+    for (HWND w : { g.topmostCheck, g.pasteButton, g.editButton, g.exitButton })
+        SetWindowPos(w, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+    if (focusFirstButton && !g.buttons.empty()) SetFocus(g.buttons.front());
+}
+
+// Selects group i (list box, buttons and saved setting).
+void SelectGroup(size_t i, bool focusFirstButton) {
+    if (i >= g.groups.size()) return;
+    g.group = i;
+    g.groupName = g.groups[i];
+    SendMessageW(g.groupList, LB_SETCURSEL, static_cast<WPARAM>(i), 0);
+    SaveLastGroup(g.groupName);
+    ShowGroupButtons(focusFirstButton);
+    SetStatus(g.groupName + L": " + std::to_wstring(g.buttons.size()) +
+              (g.buttons.size() == 1 ? L" button" : L" buttons"));
+}
+
+// Ctrl+Tab / Ctrl+Shift+Tab: next / previous group, wrapping around.
+void StepGroup(int delta) {
+    const size_t n = g.groups.size();
+    if (n < 2) return;
+    const size_t next = delta > 0 ? (g.group + 1) % n : (g.group + n - 1) % n;
+    // Keep the focus in the list if it's there; otherwise go to the new buttons.
+    SelectGroup(next, GetFocus() != g.groupList);
+}
+
+// Sizes the window and places every control. The window is sized for the
+// largest group so it keeps its size when switching groups.
+void LayoutWindow() {
+    RebuildGroups();
+
     HDC dc = GetDC(g.hwnd);
     HGDIOBJ oldFont = SelectObject(dc, g.font);
+    int maxText = 0, maxGroupText = 0;
     for (const auto& d : g.defs) {
         SIZE sz{};
         GetTextExtentPoint32W(dc, d.text.c_str(), static_cast<int>(d.text.size()), &sz);
         maxText = std::max(maxText, static_cast<int>(sz.cx));
     }
-    SelectObject(dc, oldFont);
+    for (const auto& name : g.groups) {
+        SIZE sz{};
+        GetTextExtentPoint32W(dc, name.c_str(), static_cast<int>(name.size()), &sz);
+        maxGroupText = std::max(maxGroupText, static_cast<int>(sz.cx));
+    }
     SIZE linkSz{};
+    SelectObject(dc, g.linkFont ? g.linkFont : g.font); // measured in the font it is drawn in
     GetTextExtentPoint32W(dc, L"About", 5, &linkSz);
+    SelectObject(dc, oldFont);
     ReleaseDC(g.hwnd, dc);
 
     const int margin  = Scale(10);
@@ -801,41 +1135,50 @@ void LayoutButtons() {
     const int pasteW  = Scale(80);
     const int checkW  = Scale(130);
 
-    // Wrap into extra columns if the list would be taller than ~80% of the screen
-    RECT work{};
-    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    const int usableH = (work.bottom - work.top) * 8 / 10 - 2 * margin - statusH;
-    const int maxRows = std::max(1, (usableH + gap) / (btnH + gap));
-    const int count   = static_cast<int>(g.defs.size());
-    const int rows    = std::min(count, maxRows);
-    const int cols    = count == 0 ? 1 : (count + maxRows - 1) / maxRows;
-
-    // Window width: wide enough for the longest label and for the bottom row.
-    // Message buttons are then stretched so they fill the full width.
-    const int labelW  = std::max(Scale(220), maxText + Scale(32));
-    const int clientW = std::max(2 * margin + cols * labelW + (cols - 1) * gap,
-                                 2 * margin + checkW + gap + pasteW + gap + editW + gap + exitW);
-    const int btnW    = (clientW - 2 * margin - (cols - 1) * gap) / cols;
-
-    for (int i = 0; i < count; ++i) {
-        const int col = i / maxRows, row = i % maxRows;
-        HWND b = CreateWindowExW(0, L"BUTTON", g.defs[i].text.c_str(),
-                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                                 margin + col * (btnW + gap), margin + row * (btnH + gap),
-                                 btnW, btnH, g.hwnd,
-                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_FIRST_BUTTON + i)),
-                                 g.inst, nullptr);
-        SendMessageW(b, WM_SETFONT, reinterpret_cast<WPARAM>(g.font), TRUE);
-        g.buttons.push_back(b);
+    // Largest group decides the grid size
+    int maxCount = 0;
+    for (const auto& name : g.groups) {
+        const int n = static_cast<int>(std::count_if(g.defs.begin(), g.defs.end(),
+                                       [&](const ButtonDef& d) { return d.group == name; }));
+        maxCount = std::max(maxCount, n);
     }
 
+    // Wrap into extra columns if a group would be taller than ~80% of the screen
+    // (the monitor the window is on)
+    MONITORINFO mi{ sizeof(mi) };
+    GetMonitorInfoW(MonitorFromWindow(g.hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    const RECT work = mi.rcWork;
+    const int usableH = (work.bottom - work.top) * 8 / 10 - 2 * margin - statusH - btnH - 2 * gap;
+    const int maxRows = std::max(1, (usableH + gap) / (btnH + gap));
+    const int rows    = std::min(maxCount, maxRows);
+    const int cols    = maxCount == 0 ? 1 : (maxCount + maxRows - 1) / maxRows;
+
+    // Groups pane: wide enough for the longest group name (plus a scroll bar)
+    const int navW = std::max(Scale(120), maxGroupText + Scale(16) + Metric(SM_CXVSCROLL));
+    const int gridX = margin + navW + margin;
+
+    // Window width: wide enough for the grid and for the bottom row.
+    // Message buttons are then stretched so they fill the full width.
+    const int labelW  = std::max(Scale(220), maxText + Scale(32));
+    const int clientW = std::max(gridX + cols * labelW + (cols - 1) * gap + margin,
+                                 2 * margin + checkW + gap + pasteW + gap + editW + gap + exitW);
+    const int btnW    = (clientW - gridX - margin - (cols - 1) * gap) / cols;
+
+    // Content height: the button grid, or enough to list every group (within limits)
+    const int itemH    = static_cast<int>(SendMessageW(g.groupList, LB_GETITEMHEIGHT, 0, 0));
+    const int listNeed = itemH * static_cast<int>(g.groups.size()) + Scale(4);
     const int buttonsH = rows > 0 ? rows * (btnH + gap) - gap : 0;
-    const int exitY    = margin + buttonsH + (rows > 0 ? 2 * gap : 0); // extra space below the list
-    const int clientH  = exitY + btnH + margin + statusH;
+    const int contentH = std::max({ buttonsH, std::min(listNeed, std::max(usableH, buttonsH)), btnH * 3 });
+
+    g.gridX = gridX; g.gridY = margin; g.gridBtnW = btnW; g.gridBtnH = btnH;
+    g.gridGap = gap; g.gridMaxRows = maxRows;
+
+    MoveWindow(g.groupList, margin, margin, navW, contentH, TRUE);
+
+    const int exitY   = margin + contentH + 2 * gap; // extra space below the list
+    const int clientH = exitY + btnH + margin + statusH;
 
     // Bottom row: "Always on top" checkbox (left), then "Paste", "Edit Clips" and "Exit" (right).
-    // Moving each to HWND_BOTTOM in turn puts them last in the Tab order:
-    // checkbox, Paste, Edit Clips, Exit.
     const int exitX  = clientW - margin - exitW;
     const int editX  = exitX - gap - editW;
     const int pasteX = editX - gap - pasteW;
@@ -843,10 +1186,6 @@ void LayoutButtons() {
     MoveWindow(g.pasteButton, pasteX, exitY, pasteW, btnH, TRUE);
     MoveWindow(g.editButton, editX, exitY, editW, btnH, TRUE);
     MoveWindow(g.exitButton, exitX, exitY, exitW, btnH, TRUE);
-    SetWindowPos(g.topmostCheck, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetWindowPos(g.pasteButton, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetWindowPos(g.editButton, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetWindowPos(g.exitButton, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     const int statusY = clientH - statusH;
     // Status line on the left, "About" link at the right end of the same row
@@ -855,11 +1194,12 @@ void LayoutButtons() {
     MoveWindow(g.status, margin, statusY, clientW - 2 * margin - linkW - gap, lineH, TRUE);
 
     RECT rc{ 0, 0, clientW, clientH };
-    AdjustWindowRectEx(&rc, kMainStyle, FALSE, kMainExStyle);
+    AdjustRectForDpi(rc);
     SetWindowPos(g.hwnd, nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
                  SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 
-    if (!g.buttons.empty()) SetFocus(g.buttons.front());
+    // Keep the focus in the groups list if it's there (e.g. after F5 or a reload)
+    ShowGroupButtons(GetFocus() != g.groupList);
 }
 
 // Last-write time and size of a file; false if the file can't be read.
@@ -889,22 +1229,25 @@ bool ReloadDefinitions() {
     std::wstring error;
     if (!LoadDefinitions(g.jsonPath, defs, error)) {
         MessageBoxW(g.hwnd, error.c_str(), kAppTitle, MB_OK | MB_ICONERROR);
-        LayoutButtons(); // keep whatever was loaded before
+        LayoutWindow(); // keep whatever was loaded before
         SetStatus(L"Failed to load button definitions.");
         return false;
     }
     g.defs = std::move(defs);
-    LayoutButtons();
+    LayoutWindow();
     SetStatus(g.defs.empty() ? L"No buttons defined in the JSON file."
-                             : std::to_wstring(g.defs.size()) + L" buttons loaded.  F5 = reload");
+                             : std::to_wstring(g.defs.size()) + L" buttons in " +
+                               std::to_wstring(g.groups.size()) +
+                               (g.groups.size() == 1 ? L" group" : L" groups") + L" loaded.  F5 = reload");
     return true;
 }
 
-// ---- "Edit Clips": open the JSON file in Notepad, reload when it's closed ----
+// ---- "Edit Clips": open the JSON file in the editor, reload when it is closed ----
 
-// Runs on a thread-pool thread when the editor process exits.
-VOID CALLBACK OnEditorExited(PVOID, BOOLEAN) {
-    PostMessageW(g.hwnd, WM_APP_EDITOR_CLOSED, 0, 0);
+// Runs on a thread-pool thread when the editor process exits. The context is
+// the launch number, so a late message from an earlier editor can be ignored.
+VOID CALLBACK OnEditorExited(PVOID context, BOOLEAN) {
+    PostMessageW(g.hwnd, WM_APP_EDITOR_CLOSED, reinterpret_cast<WPARAM>(context), 0);
 }
 
 void StopWatchingEditor() {
@@ -918,43 +1261,94 @@ void StopWatchingEditor() {
     }
 }
 
+// Folder containing Clippi's .exe, with a trailing backslash
+std::wstring ExeDirectory() {
+    std::wstring buf(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD n = GetModuleFileNameW(nullptr, &buf[0], static_cast<DWORD>(buf.size()));
+        if (n < buf.size()) { buf.resize(n); break; }
+        buf.resize(buf.size() * 2);
+    }
+    const size_t slash = buf.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring() : buf.substr(0, slash + 1);
+}
+
+// Brings the editor's window to the front if the editor we started is still open.
+bool ActivateRunningEditor() {
+    if (!g.editorProcess || WaitForSingleObject(g.editorProcess, 0) != WAIT_TIMEOUT) return false;
+    struct Find { DWORD pid; HWND found; } f{ GetProcessId(g.editorProcess), nullptr };
+    EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+        auto* f = reinterpret_cast<Find*>(lp);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid != f->pid || !IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER)) return TRUE;
+        f->found = hwnd;
+        return FALSE;
+    }, reinterpret_cast<LPARAM>(&f));
+    if (f.found) {
+        if (IsIconic(f.found)) ShowWindow(f.found, SW_RESTORE);
+        SetForegroundWindow(f.found);
+    }
+    SetStatus(L"The editor is already open.");
+    return true;
+}
+
+// Opens the button file in Clippi Editor (ClippiEditor.exe next to Clippi's .exe),
+// or in Notepad if the editor isn't there.
 void OpenEditor() {
+    if (ActivateRunningEditor()) return;
     StopWatchingEditor();
     g.jsonPath = FindJsonPath(); // also recreates the file if it was deleted
 
+    const std::wstring editor = ExeDirectory() + L"ClippiEditor.exe";
+    g.editorIsNotepad = !FileExists(editor);
     const std::wstring params = L"\"" + g.jsonPath + L"\"";
     SHELLEXECUTEINFOW sei{ sizeof(sei) };
     sei.fMask        = SEE_MASK_NOCLOSEPROCESS;
     sei.hwnd         = g.hwnd;
     sei.lpVerb       = L"open";
-    sei.lpFile       = L"notepad.exe";
+    sei.lpFile       = g.editorIsNotepad ? L"notepad.exe" : editor.c_str();
     sei.lpParameters = params.c_str();
     sei.nShow        = SW_SHOWNORMAL;
     if (!ShellExecuteExW(&sei)) {
-        MessageBoxW(g.hwnd, (L"Could not open Notepad for:\n" + g.jsonPath).c_str(),
+        MessageBoxW(g.hwnd, (L"Could not open the editor for:\n" + g.jsonPath).c_str(),
                     kAppTitle, MB_OK | MB_ICONWARNING);
         return;
     }
 
     g.editorStartTick = GetTickCount64();
+    g.haveEditStartStamp = GetFileStamp(g.jsonPath, g.editStartWriteTime, g.editStartSize);
     g.editorProcess = sei.hProcess;
+    ++g.editorSession;
     if (g.editorProcess &&
-        !RegisterWaitForSingleObject(&g.editorWait, g.editorProcess, OnEditorExited, nullptr,
+        !RegisterWaitForSingleObject(&g.editorWait, g.editorProcess, OnEditorExited,
+                                     reinterpret_cast<PVOID>(g.editorSession),
                                      INFINITE, WT_EXECUTEONLYONCE)) {
         g.editorWait = nullptr;
     }
-    SetStatus(L"Editing clips... buttons reload when Notepad is closed.");
+    SetStatus(g.editorIsNotepad ? L"Editing clips in Notepad... buttons reload when it is closed."
+                                : L"Editing clips... buttons reload when the editor is closed.");
 }
 
-// Called when the Notepad process we launched has exited.
+// Called when the editor process we launched has exited.
 void OnEditorClosed() {
     const bool quickExit = GetTickCount64() - g.editorStartTick < 3000;
     StopWatchingEditor();
 
+    // Saved during this editing session? (Switching back to Clippi may already
+    // have reloaded the buttons, so compare with the file as it was when the
+    // editor opened, not only with the last load.)
+    FILETIME t{};
+    ULONGLONG size = 0;
+    const bool savedDuringEdit = g.haveEditStartStamp && GetFileStamp(g.jsonPath, t, size) &&
+        (CompareFileTime(&t, &g.editStartWriteTime) != 0 || size != g.editStartSize);
+
     if (FileChangedSinceLoad()) {
         if (ReloadDefinitions())
             SetStatus(L"Clips updated: " + std::to_wstring(g.defs.size()) + L" buttons loaded.");
-    } else if (quickExit) {
+    } else if (savedDuringEdit) {
+        SetStatus(L"Clips updated: " + std::to_wstring(g.defs.size()) + L" buttons loaded.");
+    } else if (quickExit && g.editorIsNotepad) {
         // Windows 11 Notepad hands the file to an already-open Notepad window and
         // the process we started exits at once. Changes are then picked up when
         // you switch back to Clippi (see WM_ACTIVATEAPP).
@@ -968,18 +1362,24 @@ void OnButtonClicked(size_t index) {
     if (index >= g.defs.size()) return;
     const ButtonDef& def = g.defs[index];
 
-    std::wstring input;
-    if (!def.inputTitle.empty()) {
-        InputDlgData data{ def.inputTitle, g.lastInput[def.inputTitle] };
-        if (!PromptForInput(g.hwnd, data)) {
-            SetStatus(L"Cancelled.");
-            return;
-        }
-        g.lastInput[def.inputTitle] = data.value;
-        input = data.value;
+    // Asks for one value (remembering the last answer per prompt title).
+    // Returns false if the user cancelled.
+    auto ask = [](const std::wstring& title, bool optional, std::wstring& value) {
+        if (title.empty()) return true;
+        InputDlgData data{ title, g.lastInput[title], optional };
+        if (!PromptForInput(g.hwnd, data)) return false;
+        g.lastInput[title] = data.value;
+        value = data.value;
+        return true;
+    };
+    std::wstring input, input2;
+    // The second prompt is optional (e.g. a version number that isn't always known)
+    if (!ask(def.inputTitle, false, input) || !ask(def.inputTitle2, true, input2)) {
+        SetStatus(L"Cancelled.");
+        return;
     }
 
-    if (CopyToClipboard(g.hwnd, PrepareText(def.pasteText, input)))
+    if (CopyToClipboard(g.hwnd, PrepareText(def.pasteText, def.rawText, input, input2), input, input2))
         SetStatus(L"Copied: " + def.text);
     else
         MessageBoxW(g.hwnd, L"Could not copy text to the clipboard.", kAppTitle, MB_OK | MB_ICONWARNING);
@@ -1002,12 +1402,24 @@ bool IsShellWindow(HWND hwnd) {
     return false;
 }
 
+// True for Clippi Editor's windows (and anything else in the editor process we
+// started, such as Notepad when it is used instead), which hold the button file
+// rather than the text you want to paste into.
+bool IsEditorWindow(HWND hwnd, DWORD pid) {
+    HWND root = GetAncestor(hwnd, GA_ROOTOWNER);
+    wchar_t cls[64] = {};
+    GetClassNameW(root ? root : hwnd, cls, ARRAYSIZE(cls));
+    if (wcscmp(cls, L"ClippiEditorWnd") == 0) return true; // also if started outside Clippi
+    return g.editorProcess && pid == GetProcessId(g.editorProcess);
+}
+
 // Remembers hwnd as the paste target if it's a normal window of another program.
 void ConsiderPasteTarget(HWND hwnd) {
     if (!hwnd || !IsWindowVisible(hwnd) || IsShellWindow(hwnd)) return;
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
     if (pid == GetCurrentProcessId()) return; // Clippi itself or its dialogs
+    if (IsEditorWindow(hwnd, pid)) return;    // keep the previous target
     g.pasteTarget = hwnd;
 }
 
@@ -1120,6 +1532,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_CREATE: {
         g.hwnd = hwnd;
+        g.dpi = WindowDpi(hwnd); // DPI of the monitor the window was created on
+        CreateFonts();           // controls don't exist yet; each gets the font below
+        // Groups pane, created first so it is first in the Tab order.
+        g.groupList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
+                                      WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL |
+                                      LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+                                      0, 0, 0, 0, hwnd,
+                                      reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_GROUPS)),
+                                      g.inst, nullptr);
+        SendMessageW(g.groupList, WM_SETFONT, reinterpret_cast<WPARAM>(g.font), FALSE);
+        LoadLastGroup(g.groupName); // restore last session's group
+
         g.status = CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_LEFT | SS_NOPREFIX |
                                    SS_ENDELLIPSIS, 0, 0, 0, 0, hwnd,
                                    reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_STATUS)),
@@ -1155,10 +1579,6 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // "About" link: a static control drawn like a hyperlink (blue, underlined,
         // hand cursor). SS_NOTIFY makes it send STN_CLICKED when clicked.
-        LOGFONTW lf{};
-        GetObjectW(g.font, sizeof(lf), &lf);
-        lf.lfUnderline = TRUE;
-        g.linkFont = CreateFontIndirectW(&lf);
         g.aboutLink = CreateWindowExW(0, L"STATIC", L"About",
                                       WS_CHILD | WS_VISIBLE | SS_NOTIFY | SS_RIGHT | SS_NOPREFIX,
                                       0, 0, 0, 0, hwnd,
@@ -1186,6 +1606,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_COMMAND: {
         const int id = LOWORD(wp);
         if (id == IDA_RELOAD) { ReloadDefinitions(); return 0; }
+        if (id == IDA_NEXT_GROUP) { StepGroup(+1); return 0; }
+        if (id == IDA_PREV_GROUP) { StepGroup(-1); return 0; }
+        if (id == IDC_GROUPS && HIWORD(wp) == LBN_SELCHANGE) {
+            const LRESULT sel = SendMessageW(g.groupList, LB_GETCURSEL, 0, 0);
+            if (sel != LB_ERR && static_cast<size_t>(sel) != g.group)
+                SelectGroup(static_cast<size_t>(sel), false); // keep focus in the list
+            return 0;
+        }
         if (id == IDC_EXIT)   { DestroyWindow(hwnd); return 0; }
         if (id == IDC_EDIT && HIWORD(wp) == BN_CLICKED) { OpenEditor(); return 0; }
         if (id == IDC_PASTE && HIWORD(wp) == BN_CLICKED) { PasteIntoTarget(); return 0; }
@@ -1221,8 +1649,23 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return TRUE;
         }
         break;
+    case WM_DPICHANGED: {
+        // Moved to a monitor with a different scale: new fonts, then re-layout
+        // (LayoutWindow sizes the window itself; use the suggested position).
+        HFONT oldFont = g.font, oldLink = g.linkFont;
+        g.dpi = HIWORD(wp);
+        CreateFonts();
+        const RECT* suggested = reinterpret_cast<const RECT*>(lp);
+        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top, 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        LayoutWindow(); // recreates the group buttons with the new font
+        DeleteFont(oldFont);
+        DeleteFont(oldLink);
+        return 0;
+    }
     case WM_APP_EDITOR_CLOSED:
-        OnEditorClosed();
+        // Ignore it if it's from an editor that was replaced by a newer one
+        if (static_cast<UINT_PTR>(wp) == g.editorSession && g.editorProcess) OnEditorClosed();
         return 0;
     case WM_ACTIVATEAPP:
         // Returning to Clippi: catch edits saved in an editor we aren't tracking.
@@ -1242,27 +1685,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-HFONT CreateUiFont() {
-    NONCLIENTMETRICSW ncm{};
-    ncm.cbSize = sizeof(ncm);
-    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
-        return CreateFontIndirectW(&ncm.lfMessageFont);
-    return static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-}
-
 } // namespace
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
-    SetProcessDPIAware();
+    SetDpiAwareness(); // per-monitor v2 where available
 
     INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);
 
     g.inst = hInstance;
     HDC screen = GetDC(nullptr);
-    g.dpi = GetDeviceCaps(screen, LOGPIXELSY);
+    g_systemDpi = GetDeviceCaps(screen, LOGPIXELSY);
     ReleaseDC(nullptr, screen);
-    g.font = CreateUiFont();
+    g.dpi = g_systemDpi; // updated in WM_CREATE to the window's monitor
 
     WNDCLASSEXW wc{ sizeof(wc) };
     wc.lpfnWndProc   = WndProc;
@@ -1287,8 +1722,14 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     ShowWindow(hwnd, nCmdShow);
     UpdateWindow(hwnd);
 
-    ACCEL accel{ FVIRTKEY, VK_F5, IDA_RELOAD };
-    HACCEL hAccel = CreateAcceleratorTableW(&accel, 1);
+    ACCEL accel[] = {
+        { FVIRTKEY,                     VK_F5,    IDA_RELOAD     },
+        { FVIRTKEY | FCONTROL,          VK_TAB,   IDA_NEXT_GROUP },
+        { FVIRTKEY | FCONTROL | FSHIFT, VK_TAB,   IDA_PREV_GROUP },
+        { FVIRTKEY | FCONTROL,          VK_NEXT,  IDA_NEXT_GROUP },
+        { FVIRTKEY | FCONTROL,          VK_PRIOR, IDA_PREV_GROUP },
+    };
+    HACCEL hAccel = CreateAcceleratorTableW(accel, ARRAYSIZE(accel));
 
     MSG m;
     while (GetMessageW(&m, nullptr, 0, 0) > 0) {
@@ -1299,7 +1740,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     }
 
     DestroyAcceleratorTable(hAccel);
-    if (g.font) DeleteObject(g.font);
-    if (g.linkFont) DeleteObject(g.linkFont);
+    DeleteFont(g.font);
+    DeleteFont(g.linkFont);
     return static_cast<int>(m.wParam);
 }
