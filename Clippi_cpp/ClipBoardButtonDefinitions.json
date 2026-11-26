@@ -20,7 +20,7 @@
     },
     {
         "group": "Chat",
-        "buttonText": "Ask user: Are you ready for remote ",
+        "buttonText": "Ask user: Are you ready for remote",
         "pasteText": "Are you ready for me to remote into your PC and install %XXX%?\\n\\nNOTE: Please ensure that you close any confidential, controlled, or sensitive information before we establish a support session.\\n\\n",
         "inputBoxTitle": "Software Name"
     },
@@ -32,7 +32,7 @@
     },
     {
         "group": "Chat",
-        "buttonText": "Ask user: Are you ready for remote (Stop simulations) ",
+        "buttonText": "Ask user: Are you ready for remote (Stop simulations)",
         "pasteText": "Are you ready for me to remote into your PC and install %XXX%?\\n\\nThis application can take a very long time to complete its installation (1 to 2 hours).\\nIf you regularly run simulations, please close or pause them during this remote support session.\\n\\nNOTE: Please ensure that you close any confidential, controlled, or sensitive information before we establish a support session.\\n",
         "inputBoxTitle": "Software Name"
     },
@@ -44,7 +44,7 @@
     },
     {
         "group": "Chat",
-        "buttonText": "Tell usert: Software installed. Run and verify it",
+        "buttonText": "Tell user: Software installed. Run and verify it",
         "pasteText": "It appears that the software installed properly. Please verify it is working.\\n",
         "inputBoxTitle": ""
     },
@@ -67,8 +67,8 @@
     },
     {
         "group": "Commands",
-        "buttonText": "Copy to C:\\MyTemp\\install",
-        "pasteText": " RoboCopy  \"%XXX%\" C:\\MyTemp\\install\\ /z /v /mir /mt /r:3 /w:2",
+		"buttonText": "Copy to C:\\MyTemp\\install",
+		"pasteText": "RoboCopy \"%XXX%\" C:\\MyTemp\\install\\ /z /v /mir /mt /r:3 /w:2",
         "inputBoxTitle": "Source"
     },
     {
@@ -80,28 +80,28 @@
     },
     {
         "group": "Commands",
-        "buttonText": "Extract Tar C:\\MyTemp\\install ",
+        "buttonText": "Extract Tar C:\\MyTemp\\install",
         "pasteText": "mkdir \"C:\\MyTemp\\install\\%YYY%\" 2>nul\\n\\ntar -xf \"C:\\MyTemp\\install\\%XXX%\" -C \"C:\\MyTemp\\install\\%YYY%\"",
         "inputBoxTitle": "Tar File",
         "inputBoxTitle2": "Destination Folder"
     },
     {
         "group": "Commands",
-        "buttonText": " RoboCopy (all purpose)",
-        "pasteText": " RoboCopy  \"%XXX%\" \"%YYY%\" /z /v /mir /mt /r:3 /w:2",
+        "buttonText": "RoboCopy (all purpose)",
+        "pasteText": "RoboCopy \"%XXX%\" \"%YYY%\" /z /v /mir /mt /r:3 /w:2",
         "inputBoxTitle": "Source",
         "inputBoxTitle2": "Destination"
     },
     {
         "group": "Commands",
-        "buttonText": "UnZip (all purpose) ",
+        "buttonText": "UnZip (all purpose)",
         "pasteText": "PowerShell -Command \"Expand-Archive -Path '%XXX%' -DestinationPath '%YYY%' -Force\"",
         "inputBoxTitle": "Source",
         "inputBoxTitle2": "Destination"
     },
     {
         "group": "Commands",
-        "buttonText": "Tar Extract (all purpose) ",
+        "buttonText": "Tar Extract (all purpose)",
         "pasteText": "mkdir \"%YYY%\" 2>nul\\ntar -xf \"%XXX%\" -C \"%YYY%\"",
         "inputBoxTitle": "Source",
         "inputBoxTitle2": "Destination"
@@ -115,7 +115,7 @@
     {
         "group": "Documents",
         "buttonText": "Service Desk",
-        "pasteText": "https://www.acme.com/sites/IT-Service-Desk-Team/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FIT%2DService%2DDesk%2DTeam%2FShared%20Documents%2FGeneral&viewid=48718a6b%2Dff83%2D4d0b%2Da0f0%2D642da235462a&ovuser=ba488c5e%2Df105%2D4a2b%2Da8b1%2Db57b26a44117%2CGlenn%2EMadine%40Acme%2Ecom&TeamsCID=806fe5ff%2D4006%2D42de%2D833b%2Ddd4dcedcc796&OR=Teams%2DHL&CT=1794596571335&clickparams=eyJBcHBOYW1lIjoiVGVhbXMtV2ViIiwiQXBwVmVyc2lvbiI6IjE0MTUvMjYxMDE1MTUyMjAiLCJIYXNGZWRlcmF0ZWRVc2VyIjpmYWxzZX0%3D",
+        "pasteText": "https://www.acme.com/sites/IT-Service-Desk-Team/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FIT%2DService%2DDesk%2DTeam%2FShared%20Documents%2FGeneral&viewid=48718a6b%2Dff83%2D4d0b%2Da0f0%2D642da235462a&ovuser=ba488c5e%2Df105%2D4a2b%2Da8b1%2Db57b26a44117%2CBilly%2EBob%40Acme%2Ecom&TeamsCID=806fe5ff%2D4006%2D42de%2D833b%2Ddd9dcedcc796&OR=Teams%2DHL&CT=1799596571335&clickparams=eyJBcHBOYW19IjoiVGVhbXMtV2ViIiwiQXBwVmVyc2lvbiI9IjE0MTUvMjYxMDE1MTUyMjAiLCJIYXNGZWRlcmF0ZWRVc2VyIjpmYWxzZX0%3D",
         "inputBoxTitle": ""
     }
 ]
