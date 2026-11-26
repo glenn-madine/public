@@ -1,0 +1,121 @@
+[
+    {
+        "group": "Meeting Request",
+        "buttonText": "Initial meeting request body",
+        "pasteText": "Remote support session for installing %XXX%. %YYY%\\n\\nNOTE: Please ensure that you close any confidential, controlled, or sensitive information before we establish a support session.\\n\\n\\n",
+        "inputBoxTitle": "Application",
+        "inputBoxTitle2": "Version"
+    },
+    {
+        "group": "Ticket",
+        "buttonText": "Work notes: Meeting request sent",
+        "pasteText": "Meeting request sent to set aside time for installing %XXX%.\\n",
+        "inputBoxTitle": "Application/PC"
+    },
+    {
+        "group": "Ticket",
+        "buttonText": "Customer visible note: Done - Close Ticket",
+        "pasteText": "%XXX% successfully installed and verified by user.",
+        "inputBoxTitle": "Application"
+    },
+    {
+        "group": "Chat",
+        "buttonText": "Ask user: Are you ready for remote",
+        "pasteText": "Are you ready for me to remote into your PC and install %XXX%?\\n\\nNOTE: Please ensure that you close any confidential, controlled, or sensitive information before we establish a support session.\\n\\n",
+        "inputBoxTitle": "Software Name"
+    },
+    {
+        "group": "Chat",
+        "buttonText": "Ask user: Are you ready for remote (Close Office)",
+        "pasteText": "Are you ready for me to remote into your PC and install %XXX%?\\n\\nPlease close the following MS Office applications if they are open:\\nExcel\\nPowerPoint\\nWord\\nOutlook\\n\\nNOTE: Please ensure that you close any confidential, controlled, or sensitive information before we establish a support session.\\n",
+        "inputBoxTitle": "Software Name"
+    },
+    {
+        "group": "Chat",
+        "buttonText": "Ask user: Are you ready for remote (Stop simulations)",
+        "pasteText": "Are you ready for me to remote into your PC and install %XXX%?\\n\\nThis application can take a very long time to complete its installation (1 to 2 hours).\\nIf you regularly run simulations, please close or pause them during this remote support session.\\n\\nNOTE: Please ensure that you close any confidential, controlled, or sensitive information before we establish a support session.\\n",
+        "inputBoxTitle": "Software Name"
+    },
+    {
+        "group": "Chat",
+        "buttonText": "Notify user: Click Approve when you see it",
+        "pasteText": "In a moment, you will see a popup... click Approve when you see it....",
+        "inputBoxTitle": ""
+    },
+    {
+        "group": "Chat",
+        "buttonText": "Tell user: Software installed. Run and verify it",
+        "pasteText": "It appears that the software installed properly. Please verify it is working.\\n",
+        "inputBoxTitle": ""
+    },
+    {
+        "group": "Chat",
+        "buttonText": "Tell user: Done - I disconnected",
+        "pasteText": "I have now disconnected. Have a great day.",
+        "inputBoxTitle": ""
+    },
+    {
+        "group": "Send Instructions",
+        "buttonText": "Get IP Email",
+        "pasteText": "I need additional information regarding ticket: %XXX%.\\n\\nWhen you have a moment, please provide me with your computer’s IPv4 address.\\nYou can get this by going to the command prompt and entering IPCONFIG\\nYou may need to scroll up in the command prompt window and look for a second IPv4 address that start with 10 (10.xxx.x.x)\\n\\nOr\\n\\nPress Win + R, type CMD, and press Enter.\\nType IPCONFIG and press enter.\\nUnder your active adapter (for example “Ethernet adapter Ethernet” or “Wireless LAN adapter Wi-Fi”), find the IPv4 Address line.\\nYou may need to scroll up in the command prompt window and look for a second IPv4 address that start with 10 (10.xxx.x.x)\\n\\n",
+        "inputBoxTitle": "Enter Ticket"
+    },
+    {
+        "buttonText": "Close any confidential",
+        "pasteText": "\\nNOTE: Please ensure that you close any confidential, controlled, or sensitive information before we establish a support session.\\n",
+        "inputBoxTitle": ""
+    },
+    {
+        "group": "Commands",
+		"buttonText": "Copy to C:\\MyTemp\\install",
+		"pasteText": "RoboCopy \"%XXX%\" C:\\MyTemp\\install\\ /z /v /mir /mt /r:3 /w:2",
+        "inputBoxTitle": "Source"
+    },
+    {
+        "group": "Commands",
+        "buttonText": "Unzip File in C:\\MyTemp\\install",
+        "pasteText": "powershell -Command \"Expand-Archive -Path 'C:\\MyTemp\\install\\%XXX%' -DestinationPath 'C:\\MyTemp\\install\\%YYY%' -Force\"",
+        "inputBoxTitle": "Zip File Name",
+        "inputBoxTitle2": "Destination Folder"
+    },
+    {
+        "group": "Commands",
+        "buttonText": "Extract Tar C:\\MyTemp\\install",
+        "pasteText": "mkdir \"C:\\MyTemp\\install\\%YYY%\" 2>nul\\n\\ntar -xf \"C:\\MyTemp\\install\\%XXX%\" -C \"C:\\MyTemp\\install\\%YYY%\"",
+        "inputBoxTitle": "Tar File",
+        "inputBoxTitle2": "Destination Folder"
+    },
+    {
+        "group": "Commands",
+        "buttonText": "RoboCopy (all purpose)",
+        "pasteText": "RoboCopy \"%XXX%\" \"%YYY%\" /z /v /mir /mt /r:3 /w:2",
+        "inputBoxTitle": "Source",
+        "inputBoxTitle2": "Destination"
+    },
+    {
+        "group": "Commands",
+        "buttonText": "UnZip (all purpose)",
+        "pasteText": "PowerShell -Command \"Expand-Archive -Path '%XXX%' -DestinationPath '%YYY%' -Force\"",
+        "inputBoxTitle": "Source",
+        "inputBoxTitle2": "Destination"
+    },
+    {
+        "group": "Commands",
+        "buttonText": "Tar Extract (all purpose)",
+        "pasteText": "mkdir \"%YYY%\" 2>nul\\ntar -xf \"%XXX%\" -C \"%YYY%\"",
+        "inputBoxTitle": "Source",
+        "inputBoxTitle2": "Destination"
+    },
+    {
+        "group": "Documents",
+        "buttonText": "COBOL",
+        "pasteText": "https://www.acme.com/readme.aspx",
+        "inputBoxTitle": ""
+    },
+    {
+        "group": "Documents",
+        "buttonText": "Service Desk",
+        "pasteText": "https://www.acme.com/sites/IT-Service-Desk-Team/Shared%20Documents/Forms/AllItems.aspx?id=%2Fsites%2FIT%2DService%2DDesk%2DTeam%2FShared%20Documents%2FGeneral&viewid=48718a6b%2Dff83%2D4d0b%2Da0f0%2D642da235462a&ovuser=ba488c5e%2Df105%2D4a2b%2Da8b1%2Db57b26a44117%2CBilly%2EBob%40Acme%2Ecom&TeamsCID=806fe5ff%2D4006%2D42de%2D833b%2Ddd9dcedcc796&OR=Teams%2DHL&CT=1799596571335&clickparams=eyJBcHBOYW19IjoiVGVhbXMtV2ViIiwiQXBwVmVyc2lvbiI9IjE0MTUvMjYxMDE1MTUyMjAiLCJIYXNGZWRlcmF0ZWRVc2VyIjpmYWxzZX0%3D",
+        "inputBoxTitle": ""
+    }
+]
