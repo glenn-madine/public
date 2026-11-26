@@ -21,9 +21,11 @@
 //                  Word) and HTML (Teams, browsers) versions that include the
 //                  picture; plain-text apps get the text without it.
 //   %RTF:<base64>% A ready-made RTF document (e.g. a formatted signature),
-//                  put on the clipboard as-is for Outlook and Word.
+//                  put on the clipboard as-is for Outlook and Word. If the
+//                  clip has no %HTML%, Clippi makes the HTML version from it.
 //   %HTML:<base64>% A ready-made HTML fragment, put on the clipboard as-is
-//                  for Teams, browsers and web mail.
+//                  for Teams, browsers and web mail (optional; Clippi Editor
+//                  no longer writes it, older files may have it).
 //   Line breaks at the end of the text are not copied.
 //
 // "rawText": true  (optional, written by Clippi Editor when needed)
@@ -65,6 +67,9 @@
 //   High DPI       Per-monitor aware: the window is re-laid out at the new
 //                  scale when it is moved to a monitor with a different DPI.
 //
+// Shared with Clippi Editor: ClippiCommon.h (JSON parser, file/text helpers,
+// Base64, PNG, DialogTemplate) and ClippiRichText.h (RTF/HTML conversion).
+//
 // Pure Win32 / C++17, no external libraries.
 
 #ifndef UNICODE
@@ -87,15 +92,18 @@
 #include <cstring>
 #include <cstdio>
 #include "resource.h"
+#include "ClippiCommon.h"   // JSON parser, file/text helpers, Base64, PNG, DialogTemplate
+#include "ClippiRichText.h" // RTF -> HTML for formatted buttons (shared with Clippi Editor)
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
-#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "advapi32.lib")   // (ClippiRichText.h adds ole32, gdi32, windowscodecs, uuid)
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 namespace {
 
-constexpr wchar_t kJsonFileName[] = L"ClipBoardButtonDefinitions.json";
+using namespace clippi;
+
 constexpr wchar_t kPlaceholder[]  = L"%XXX%";  // answer to inputBoxTitle
 constexpr wchar_t kPlaceholder2[] = L"%YYY%";  // answer to inputBoxTitle2
 constexpr wchar_t kWndClass[]     = L"ClipBoardButtonsWnd";
@@ -126,169 +134,6 @@ constexpr DWORD kMainStyle   = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINI
 constexpr DWORD kMainExStyle = 0;
 
 // ============================================================================
-// Minimal JSON parser (objects, arrays, strings, numbers, true/false/null)
-// ============================================================================
-struct JsonValue {
-    enum Type { Null, Bool, Number, String, Array, Object } type = Null;
-    bool boolean = false;
-    double number = 0.0;
-    std::wstring str;
-    std::vector<JsonValue> array;
-    std::vector<std::pair<std::wstring, JsonValue>> object;
-
-    const JsonValue* Find(const wchar_t* key) const {
-        for (const auto& kv : object)
-            if (kv.first == key) return &kv.second;
-        return nullptr;
-    }
-};
-
-struct JsonError { std::wstring message; };
-
-class JsonParser {
-public:
-    explicit JsonParser(const std::wstring& text) : s_(text) {}
-
-    JsonValue Parse() {
-        JsonValue v = ParseValue();
-        if (Peek() != 0) Fail(L"Unexpected data after end of JSON");
-        return v;
-    }
-
-private:
-    const std::wstring& s_;
-    size_t p_ = 0;
-
-    [[noreturn]] void Fail(const std::wstring& what) const {
-        size_t line = 1, col = 1;
-        for (size_t i = 0; i < p_ && i < s_.size(); ++i) {
-            if (s_[i] == L'\n') { ++line; col = 1; } else { ++col; }
-        }
-        throw JsonError{ what + L" (line " + std::to_wstring(line) +
-                         L", column " + std::to_wstring(col) + L")" };
-    }
-
-    void SkipWs() {
-        while (p_ < s_.size() &&
-               (s_[p_] == L' ' || s_[p_] == L'\t' || s_[p_] == L'\r' || s_[p_] == L'\n'))
-            ++p_;
-    }
-
-    wchar_t Peek() { SkipWs(); return p_ < s_.size() ? s_[p_] : 0; }
-
-    void Expect(wchar_t c) {
-        if (Peek() != c) Fail(std::wstring(L"Expected '") + c + L"'");
-        ++p_;
-    }
-
-    bool Match(const wchar_t* lit) {
-        const size_t n = wcslen(lit);
-        if (s_.compare(p_, n, lit) == 0) { p_ += n; return true; }
-        return false;
-    }
-
-    JsonValue ParseValue() {
-        JsonValue v;
-        switch (Peek()) {
-        case L'{': v.type = JsonValue::Object; ParseObject(v); break;
-        case L'[': v.type = JsonValue::Array;  ParseArray(v);  break;
-        case L'"': v.type = JsonValue::String; v.str = ParseString(); break;
-        case L't':
-            if (!Match(L"true")) Fail(L"Invalid literal");
-            v.type = JsonValue::Bool; v.boolean = true; break;
-        case L'f':
-            if (!Match(L"false")) Fail(L"Invalid literal");
-            v.type = JsonValue::Bool; break;
-        case L'n':
-            if (!Match(L"null")) Fail(L"Invalid literal");
-            break;
-        case 0:
-            Fail(L"Unexpected end of file");
-        default:
-            ParseNumber(v); break;
-        }
-        return v;
-    }
-
-    void ParseObject(JsonValue& v) {
-        ++p_; // '{'
-        if (Peek() == L'}') { ++p_; return; }
-        for (;;) {
-            if (Peek() != L'"') Fail(L"Expected property name in quotes");
-            std::wstring key = ParseString();
-            Expect(L':');
-            JsonValue val = ParseValue();
-            v.object.emplace_back(std::move(key), std::move(val));
-            const wchar_t c = Peek();
-            if (c == L',') { ++p_; continue; }
-            if (c == L'}') { ++p_; return; }
-            Fail(L"Expected ',' or '}'");
-        }
-    }
-
-    void ParseArray(JsonValue& v) {
-        ++p_; // '['
-        if (Peek() == L']') { ++p_; return; }
-        for (;;) {
-            v.array.push_back(ParseValue());
-            const wchar_t c = Peek();
-            if (c == L',') { ++p_; continue; }
-            if (c == L']') { ++p_; return; }
-            Fail(L"Expected ',' or ']'");
-        }
-    }
-
-    std::wstring ParseString() {
-        ++p_; // opening quote
-        std::wstring out;
-        while (p_ < s_.size()) {
-            const wchar_t c = s_[p_++];
-            if (c == L'"') return out;
-            if (c != L'\\') { out += c; continue; }
-            if (p_ >= s_.size()) break;
-            const wchar_t e = s_[p_++];
-            switch (e) {
-            case L'"':  out += L'"';  break;
-            case L'\\': out += L'\\'; break;
-            case L'/':  out += L'/';  break;
-            case L'b':  out += L'\b'; break;
-            case L'f':  out += L'\f'; break;
-            case L'n':  out += L'\n'; break;
-            case L'r':  out += L'\r'; break;
-            case L't':  out += L'\t'; break;
-            case L'u': {
-                if (p_ + 4 > s_.size()) Fail(L"Bad \\u escape");
-                unsigned cp = 0;
-                for (int i = 0; i < 4; ++i) {
-                    const wchar_t h = s_[p_++];
-                    cp <<= 4;
-                    if (h >= L'0' && h <= L'9')      cp |= h - L'0';
-                    else if (h >= L'a' && h <= L'f') cp |= h - L'a' + 10;
-                    else if (h >= L'A' && h <= L'F') cp |= h - L'A' + 10;
-                    else Fail(L"Bad \\u escape");
-                }
-                out += static_cast<wchar_t>(cp); // UTF-16: surrogate pairs pass through as-is
-                break;
-            }
-            default:
-                Fail(L"Invalid escape sequence");
-            }
-        }
-        Fail(L"Unterminated string");
-    }
-
-    void ParseNumber(JsonValue& v) {
-        const wchar_t* start = s_.c_str() + p_;
-        wchar_t* end = nullptr;
-        const double d = wcstod(start, &end);
-        if (end == start) Fail(L"Unexpected character");
-        p_ += static_cast<size_t>(end - start);
-        v.type = JsonValue::Number;
-        v.number = d;
-    }
-};
-
-// ============================================================================
 // Button definitions
 // ============================================================================
 struct ButtonDef {
@@ -300,60 +145,16 @@ struct ButtonDef {
     bool rawText = false;     // rawText: pasteText is literal (no \n / \t conversion)
 };
 
-std::wstring Trim(const std::wstring& s);
-
 std::wstring GetString(const JsonValue& obj, const wchar_t* key) {
     const JsonValue* v = obj.Find(key);
     return (v && v->type == JsonValue::String) ? v->str : std::wstring();
 }
 
-// Reads a text file as UTF-8 (BOM optional) or UTF-16LE (with BOM).
+// Reads the button file as text (UTF-8, UTF-16LE with BOM, or ANSI; see ClippiCommon.h).
 bool ReadTextFile(const std::wstring& path, std::wstring& out, std::wstring& error) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                           nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-        error = L"Cannot open file:\n" + path;
-        return false;
-    }
-    LARGE_INTEGER size{};
-    GetFileSizeEx(h, &size);
-    if (size.QuadPart > 16 * 1024 * 1024) {
-        CloseHandle(h);
-        error = L"File is too large:\n" + path;
-        return false;
-    }
-    std::string bytes(static_cast<size_t>(size.QuadPart), '\0');
-    DWORD read = 0;
-    const BOOL ok = bytes.empty() ||
-                    ReadFile(h, &bytes[0], static_cast<DWORD>(bytes.size()), &read, nullptr);
-    CloseHandle(h);
-    if (!ok) {
-        error = L"Cannot read file:\n" + path;
-        return false;
-    }
-    bytes.resize(read);
-
-    // UTF-16LE with BOM
-    if (bytes.size() >= 2 && (unsigned char)bytes[0] == 0xFF && (unsigned char)bytes[1] == 0xFE) {
-        out.assign(reinterpret_cast<const wchar_t*>(bytes.data() + 2), (bytes.size() - 2) / 2);
-        return true;
-    }
-    // UTF-8, optional BOM
-    size_t offset = 0;
-    if (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF &&
-        (unsigned char)bytes[1] == 0xBB && (unsigned char)bytes[2] == 0xBF)
-        offset = 3;
-
-    const char* src = bytes.data() + offset;
-    const int srcLen = static_cast<int>(bytes.size() - offset);
-    out.clear();
-    if (srcLen == 0) return true;
-
-    UINT codePage = CP_UTF8;
-    int len = MultiByteToWideChar(codePage, MB_ERR_INVALID_CHARS, src, srcLen, nullptr, 0);
-    if (len == 0) { codePage = CP_ACP; len = MultiByteToWideChar(codePage, 0, src, srcLen, nullptr, 0); }
-    out.resize(static_cast<size_t>(len));
-    MultiByteToWideChar(codePage, 0, src, srcLen, &out[0], len);
+    std::vector<unsigned char> bytes;
+    if (!ReadFileBytes(path, bytes, error)) return false;
+    out = BytesToText(bytes);
     return true;
 }
 
@@ -389,19 +190,6 @@ bool LoadDefinitions(const std::wstring& path, std::vector<ButtonDef>& defs, std
         defs.push_back(std::move(d));
     }
     return true;
-}
-
-bool FileExists(const std::wstring& path) {
-    const DWORD a = GetFileAttributesW(path.c_str());
-    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-// %USERPROFILE%\Clippi_Storage (empty string if USERPROFILE isn't set)
-std::wstring StorageFolder() {
-    wchar_t buf[MAX_PATH * 2];
-    const DWORD n = ExpandEnvironmentStringsW(L"%USERPROFILE%\\Clippi_Storage", buf, ARRAYSIZE(buf));
-    if (n == 0 || n > ARRAYSIZE(buf) || wcschr(buf, L'%')) return std::wstring();
-    return buf;
 }
 
 // Creates the storage folder and writes the default JSON embedded in the .exe.
@@ -443,12 +231,6 @@ std::wstring FindJsonPath() {
 // ============================================================================
 // Text helpers
 // ============================================================================
-void ReplaceAll(std::wstring& s, const std::wstring& from, const std::wstring& to) {
-    if (from.empty()) return;
-    for (size_t pos = 0; (pos = s.find(from, pos)) != std::wstring::npos; pos += to.size())
-        s.replace(pos, from.size(), to);
-}
-
 // Replaces %XXX% with x and %YYY% with y in one pass, so text typed into one
 // box is never changed by the other replacement.
 template <class Str>
@@ -481,13 +263,6 @@ std::wstring PrepareText(std::wstring text, bool rawText, const std::wstring& in
     return ReplacePlaceholders<std::wstring>(text, kPlaceholder, input, kPlaceholder2, input2);
 }
 
-std::wstring Trim(const std::wstring& s) {
-    size_t b = 0, e = s.size();
-    while (b < e && iswspace(s[b])) ++b;
-    while (e > b && iswspace(s[e - 1])) --e;
-    return s.substr(b, e - b);
-}
-
 // ============================================================================
 // Rich content in pasteText
 // ----------------------------------------------------------------------------
@@ -502,6 +277,8 @@ std::wstring Trim(const std::wstring& s) {
 // The text outside the tokens is always the plain-text version (Notepad etc.).
 // A ready-made RTF/HTML takes priority over one built from %IMG% tokens, and
 // %XXX% / %YYY% inside it are replaced too (escaped for that format).
+// A clip with %RTF% but no %HTML% gets an HTML version made from the RTF
+// (after %XXX% / %YYY% are filled in), so pictures are stored only once.
 // Without any token, only plain text is copied.
 // ============================================================================
 enum class SegKind { Text, Image, Rtf, Html };
@@ -513,39 +290,6 @@ struct PasteSegment {
     std::vector<unsigned char> data; // Image: PNG bytes; Rtf/Html: document bytes
     int width = 0, height = 0;       // Image: pixels, from the PNG header
 };
-
-std::vector<unsigned char> Base64Decode(const std::wstring& s) {
-    static const char kChars[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    std::vector<unsigned char> out;
-    unsigned buffer = 0;
-    int bits = 0;
-    for (wchar_t c : s) {
-        if (c == L'=') break;
-        const char* hit = (c > 0 && c < 128) ? strchr(kChars, static_cast<char>(c)) : nullptr;
-        if (!hit) continue; // ignore whitespace / line breaks
-        buffer = (buffer << 6) | static_cast<unsigned>(hit - kChars);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<unsigned char>((buffer >> bits) & 0xFF));
-        }
-    }
-    return out;
-}
-
-// Reads width/height from a PNG's IHDR chunk. Returns false if it isn't a PNG.
-bool PngSize(const std::vector<unsigned char>& png, int& w, int& h) {
-    static const unsigned char kSig[8] = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
-    if (png.size() < 24 || memcmp(png.data(), kSig, 8) != 0 || memcmp(&png[12], "IHDR", 4) != 0)
-        return false;
-    auto be32 = [&](size_t i) {
-        return static_cast<int>((png[i] << 24) | (png[i + 1] << 16) | (png[i + 2] << 8) | png[i + 3]);
-    };
-    w = be32(16);
-    h = be32(20);
-    return w > 0 && h > 0;
-}
 
 // Splits prepared text into plain-text pieces and %IMG:% / %RTF:% / %HTML:% tokens.
 std::vector<PasteSegment> SplitSegments(const std::wstring& text) {
@@ -586,15 +330,6 @@ std::vector<PasteSegment> SplitSegments(const std::wstring& text) {
     return segs;
 }
 
-std::string ToUtf8(const std::wstring& w) {
-    if (w.empty()) return std::string();
-    const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
-                                      nullptr, 0, nullptr, nullptr);
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), &s[0], n, nullptr, nullptr);
-    return s;
-}
-
 // Text -> HTML (UTF-8): escapes special characters, line breaks become <br>.
 // A space at the start of a line or after another space becomes &nbsp;, so
 // indentation and runs of spaces survive (HTML would collapse them).
@@ -622,7 +357,8 @@ std::string HtmlEscape(const std::wstring& text) {
 }
 
 // Text -> RTF: escapes \ { }, line breaks become \par, non-ASCII becomes \uN?
-std::string RtfEscape(const std::wstring& text) {
+// (unlike RtfEscape in ClippiRichText.h, which drops line breaks)
+std::string RtfEscapeLines(const std::wstring& text) {
     std::string out;
     for (wchar_t c : text) {
         switch (c) {
@@ -667,7 +403,7 @@ std::string BuildRtfDocument(const std::vector<PasteSegment>& segs) {
     static const char kHex[] = "0123456789abcdef";
     for (const auto& s : segs) {
         if (s.kind == SegKind::Text) {
-            rtf += RtfEscape(s.text);
+            rtf += RtfEscapeLines(s.text);
         } else if (s.kind == SegKind::Image) {
             // picw/pich in pixels, picwgoal/pichgoal in twips (15 twips per pixel at 96 DPI)
             rtf += "{\\pict\\pngblip\\picw" + std::to_string(s.width) + "\\pich" + std::to_string(s.height) +
@@ -744,8 +480,10 @@ bool CopyToClipboard(HWND owner, const std::wstring& text, const std::wstring& i
         while (!t.empty() && (t.back() == L'\r' || t.back() == L'\n')) t.pop_back();
         if (!t.empty()) break;
     }
-    rtf  = ReplacePlaceholders<std::string>(rtf,  "%XXX%", RtfEscape(input),  "%YYY%", RtfEscape(input2));
+    rtf  = ReplacePlaceholders<std::string>(rtf,  "%XXX%", RtfEscapeLines(input),  "%YYY%", RtfEscapeLines(input2));
     html = ReplacePlaceholders<std::string>(html, "%XXX%", HtmlEscape(input), "%YYY%", HtmlEscape(input2));
+    // No ready-made HTML: make it from the RTF (Teams and browsers don't read RTF)
+    if (html.empty() && !rtf.empty()) html = DocToHtml(RtfToDoc(rtf));
     if (rtf.empty() && hasImage)  rtf  = BuildRtfDocument(segs);
     if (html.empty() && hasImage) html = BuildHtmlFragment(segs);
 
@@ -769,47 +507,8 @@ bool CopyToClipboard(HWND owner, const std::wstring& text, const std::wstring& i
 }
 
 // ============================================================================
-// Input box (dialog template built in memory, so no .rc file is needed)
+// Input box (DialogTemplate from ClippiCommon.h, so no .rc dialog is needed)
 // ============================================================================
-class DialogTemplate {
-public:
-    DialogTemplate(const wchar_t* title, short cx, short cy) {
-        PutDword(DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU);
-        PutDword(0);                       // extended style
-        countIndex_ = buf_.size();
-        buf_.push_back(0);                 // item count (filled in by AddItem)
-        PutShort(0); PutShort(0); PutShort(cx); PutShort(cy);
-        buf_.push_back(0);                 // no menu
-        buf_.push_back(0);                 // default dialog class
-        PutString(title);
-        buf_.push_back(9);                 // font point size
-        PutString(L"Segoe UI");
-    }
-
-    void AddItem(WORD id, WORD classAtom, DWORD style,
-                 short x, short y, short cx, short cy, const wchar_t* text) {
-        if (buf_.size() % 2) buf_.push_back(0); // DWORD-align each item
-        PutDword(style | WS_CHILD | WS_VISIBLE);
-        PutDword(0);
-        PutShort(x); PutShort(y); PutShort(cx); PutShort(cy);
-        buf_.push_back(id);
-        buf_.push_back(0xFFFF);
-        buf_.push_back(classAtom);         // 0x80 button, 0x81 edit, 0x82 static
-        PutString(text);
-        buf_.push_back(0);                 // no creation data
-        ++buf_[countIndex_];
-    }
-
-    LPCDLGTEMPLATEW Get() const { return reinterpret_cast<LPCDLGTEMPLATEW>(buf_.data()); }
-
-private:
-    std::vector<WORD> buf_;
-    size_t countIndex_ = 0;
-    void PutDword(DWORD d) { buf_.push_back(LOWORD(d)); buf_.push_back(HIWORD(d)); }
-    void PutShort(short s) { buf_.push_back(static_cast<WORD>(s)); }
-    void PutString(const wchar_t* s) { while (*s) buf_.push_back(*s++); buf_.push_back(0); }
-};
-
 struct InputDlgData {
     std::wstring title;
     std::wstring value;      // in: initial text, out: entered text
@@ -1689,6 +1388,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     SetDpiAwareness(); // per-monitor v2 where available
+    // COM for WIC: turning RTF pictures (metafiles, bitmaps) into PNG for the HTML version
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
 
     INITCOMMONCONTROLSEX icc{ sizeof(icc), ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);
@@ -1742,5 +1443,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     DestroyAcceleratorTable(hAccel);
     DeleteFont(g.font);
     DeleteFont(g.linkFont);
+    CoUninitialize();
     return static_cast<int>(m.wParam);
 }
