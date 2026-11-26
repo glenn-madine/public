@@ -19,8 +19,10 @@ Clippi only copies text to the clipboard. It never runs the commands it holds; t
 | `resource.h` | 15 | Shared version number, author, date and resource IDs |
 | `ClipBoardButtons.rc` | 37 | Clippi resources: icon, embedded default button file, version info |
 | `ClippiEditor.rc` | 33 | Clippi Editor resources: icon, version info |
-| `ClipBoardButtonDefinitions.json` | 121 | The default buttons (19 buttons in 7 groups), embedded in Clippi's .exe |
-| `Clippi.ico` | – | Program icon for both programs (9 sizes, 16 to 96 pixels) |
+| `ClipBoardButtonDefinitions.json` | 26 | The default buttons (4 buttons in 2 groups: *Remote Support* and *Email*), embedded in Clippi's .exe |
+| `Clippi.ico` | – | Program icon for both programs (10 sizes, 16 to 256 pixels) |
+
+The button file in this package was supplied as `_ClipBoardButtonDefinitions.json`. `ClipBoardButtons.rc` embeds a file named `ClipBoardButtonDefinitions.json` (no underscore), so rename it before building (see finding 2).
 
 ---
 
@@ -55,7 +57,7 @@ x86_64-w64-mingw32-windres ClippiEditor.rc -O coff -o ClippiEditor.res.o
 x86_64-w64-mingw32-g++ -std=c++17 -municode -mwindows -O2 ClippiEditor.cpp ClippiEditor.res.o -o ClippiEditor.exe -lcomctl32 -lcomdlg32 -lshell32 -lole32 -lwindowscodecs -luuid -lgdi32
 ```
 
-Both programs compile with `-Wall -Wextra` without errors or warnings.
+Both programs compile without errors. With `-Wall -Wextra`, GCC's only messages are `-Wmissing-field-initializers` notes on initializers such as `SHELLEXECUTEINFOW sei{ sizeof(sei) };`, which are correct C++ (the other members are zeroed); Visual Studio doesn't report them. Add `-Wno-missing-field-initializers` to silence them.
 
 ### Changing the version
 
@@ -79,7 +81,7 @@ Edit `resource.h`. Explorer shows the three numbers (Properties › Details); th
 | Backup made by the editor | same folder, `ClipBoardButtonDefinitions.json.bak` |
 | Settings | `HKCU\Software\ClipBoardButtons`: `AlwaysOnTop` (DWORD), `LastGroup` (string) |
 
-On first run, Clippi creates `Clippi_Storage` and writes the default button file embedded in the .exe. An existing file is **never overwritten** (`CREATE_NEW`), so your edits survive upgrades. Rebuilding Clippi with a new default file therefore doesn't change a copy already in `Clippi_Storage`; replace that copy yourself if you want it. Both programs read button files of up to 32 MB.
+On first run, Clippi creates `Clippi_Storage` and writes the default button file embedded in the .exe. An existing file is **never overwritten** (`CREATE_NEW`), so your edits survive upgrades. Rebuilding Clippi with a new default file therefore doesn't change a copy already in `Clippi_Storage`. To start using the new 4-button file on a PC that already has a button file, copy it over `%USERPROFILE%\Clippi_Storage\ClipBoardButtonDefinitions.json` (or delete that file and restart Clippi). Both programs read button files of up to 32 MB.
 
 ---
 
@@ -181,6 +183,8 @@ The file is a JSON array of objects, one per button, in UTF-8 (UTF-16LE with a B
 
 The text outside the tokens is always the plain-text version. Line breaks at the end are not copied.
 
+The *Signature* button in the default file uses both tokens: plain text, then `%RTF:…%` (Aptos, red company line, two links and the L3Harris logo as a 134 × 29 PNG linked to the web site), then `%HTML:…%` with the same content for Teams. Because it has a ready-made `%HTML%`, Clippi puts that HTML on the clipboard as it is.
+
 **rawText.** Normally the two characters `\n` mean a line break, so text such as `\\server\tools\new` would turn into a tab and a line break. With `"rawText": true` the text is copied exactly as written, and line breaks are ordinary JSON line breaks. The editor sets this automatically when the text contains a literal `\n` or `\t`.
 
 Example:
@@ -277,12 +281,16 @@ Both programs are single-file, pure Win32 applications with no external librarie
 | # | Severity | Finding | Recommendation |
 |---|---|---|---|
 | 1 | Medium | **Not yet run on Windows.** Both programs compile and link with all resources, and the converters and file handling are tested, but the user interface has not run. That covers Clippi Editor's Rich Edit box, toolbar, formatted paste and dialogs, and Clippi building the HTML version from RTF when a button is clicked. | Run the checklist in section 10 once on a real PC. |
-| 2 | Low | Clippi Editor is only system-DPI aware (`SetProcessDPIAware`), so it looks blurry on a second monitor with different scaling. Clippi itself is per-monitor aware. | Port Clippi's DPI helpers (`SetDpiAwareness`, `WM_DPICHANGED`) to the editor. |
-| 3 | Low | `Clippi.ico` has sizes up to 96 × 96 but no 256 × 256 image, so Explorer's *Large* and *Extra large icons* views enlarge the 96-pixel image. | Add a 256 × 256 (PNG) image to the icon. |
-| 4 | Info | The default button file is embedded in Clippi's .exe. The *Service Desk* link still carries user- and session-style parameters (`ovuser` with an organization ID and `Billy.Bob@Acme.com`, `TeamsCID`, `CT`, `clickparams`). The values have already been replaced with bogus ones. | Optional: end the link after `viewid=…`; it opens the same page. |
-| 5 | Info | By design, pictures in pasted HTML that are only a web address are not downloaded. | Copy such pictures as pictures, or save them and use *Picture…*. |
-| 6 | Info | HTML conversion is close but not exact. Tables get equal-width columns with thin grey borders, and merged cells, line spacing and background shading are not kept. | Expected; check complex content after pasting. |
-| 7 | Info | Button data left as chosen: *Get IP Email* says "start with" (twice) and repeats the scroll-up line; *Close any confidential* has no group. Lines 70–71 of the JSON file are indented with tabs, which is harmless; the editor rewrites them with spaces on its next save. | None required. |
+| 2 | Low | **Button file name.** The file was supplied as `_ClipBoardButtonDefinitions.json`, but `ClipBoardButtons.rc` embeds `ClipBoardButtonDefinitions.json`. If only the underscore file is in the project folder, the resource compiler stops with "file not found". If an older `ClipBoardButtonDefinitions.json` is still there, the old buttons are embedded without any warning. | Rename the file to `ClipBoardButtonDefinitions.json` (replacing the old one) before building. |
+| 3 | Low | Clippi Editor is only system-DPI aware (`SetProcessDPIAware`), so it looks blurry on a second monitor with different scaling. Clippi itself is per-monitor aware. | Port Clippi's DPI helpers (`SetDpiAwareness`, `WM_DPICHANGED`) to the editor. |
+| 4 | Low | **Signature: fixed black text.** The *Signature* HTML sets `color:#000000` on the whole block, and its RTF sets black (`\cf1`) for the name, title and address lines. In a dark theme (Teams, Outlook) fixed black text may be hard to read, depending on how the app adjusts colors. Clippi's own HTML leaves black out for this reason. | Optional: remove `color:#000000` from the HTML `<div>`, and use `\cf0` (automatic) in the RTF. Check in dark mode first; some apps already adjust it. |
+| 5 | Low | **Signature: if it is edited in Clippi Editor,** it is saved as text + `%RTF%`, and Clippi then builds the HTML from the RTF. That HTML is close but loses two details: the red line is not shown in capitals (`\caps` isn't converted, so "HCLTech" stays mixed case in Teams), and the font is given as `'Aptos'` without the Calibri fallback. Outlook and Word are not affected (they use the RTF). Saving the file without changing the Signature's text keeps it exactly as it is. | Either leave the Signature's text unedited, or type the line in capitals ("HCLTECH") so it doesn't depend on `\caps`. |
+| 6 | Info | The new 4-button default file reaches only PCs that don't already have a button file, because an existing file is never overwritten (section 3). | Copy the file into `Clippi_Storage` where you want it used. |
+| 7 | Info | By design, pictures in pasted HTML that are only a web address are not downloaded. | Copy such pictures as pictures, or save them and use *Picture…*. |
+| 8 | Info | HTML conversion is close but not exact. Tables get equal-width columns with thin grey borders, and merged cells, line spacing and background shading are not kept. | Expected; check complex content after pasting. |
+| 9 | Info | Button data details, all harmless: the logo links to `http://www.l3harris.com/` while the text link uses `https://`; the four `pasteText` lines are indented with tab characters (the editor rewrites them with spaces on its next save). | Optional: use `https://` for the logo link too. |
+
+**The button file (`_ClipBoardButtonDefinitions.json`) itself:** valid UTF-8 JSON without a BOM; 4 buttons (*Are you ready*, *Click Approve* and *Done* in *Remote Support*; *Signature* in *Email*); only the first button asks for a value (*Software Name*, used once as `%XXX%`). The Signature's RTF and HTML versions have the same text, the same colors, links and spacing, and the same logo picture. Its plain-text version matches them. The *Service Desk*, *Get IP Email* and *Close any confidential* buttons from the earlier file are no longer in it, so the earlier findings about them no longer apply.
 
 ### Changes in this review cycle
 
@@ -317,16 +325,22 @@ Both programs are single-file, pure Win32 applications with no external librarie
 - **HTML conversion:** tables, paragraph spacing, indentation and pictures in local files are now kept.
 - **Clippi:** initializes COM for picture conversion, and its own RTF escape is renamed `RtfEscapeLines`.
 
+**Version 1.2.1, later updates (no code changes)**
+
+- **Icon:** `Clippi.ico` now has a 256 × 256 image (redrawn from the original line art, not enlarged), so Explorer's large icon views are sharp. The nine original sizes are unchanged. No code or `.rc` change was needed: the `.rc` files embed the whole `.ico`.
+- **Default buttons:** the embedded button file is now the 4-button set described in section 8.
+
 ---
 
 ## 9. Testing performed
 
 | Test | Result |
 |---|---|
-| Build both programs with MinGW-w64 g++ 13, `-std=c++17 -Wall -Wextra`, with resources compiled from the `.rc` files and the real `Clippi.ico` | No errors or warnings; both .exe files report file version 1.2.1.0; the default button file is embedded |
+| Build both programs with MinGW-w64 g++ 13, `-std=c++17 -Wall -Wextra`, with resources compiled from the `.rc` files, the new `Clippi.ico` and the new button file | No errors (only the harmless initializer notes described in section 2); both .exe files report file version 1.2.1.0 and carry all 10 icon sizes (16–256); Clippi has the 8,735-byte button file embedded |
 | Converter tests (RTF ↔ document ↔ HTML ↔ plain: formatting, links, lists, pictures, encodings, whitespace): 37 checks | All pass |
 | New feature tests (tables, missing table tags, nested tables, Rich Edit table RTF, margins, indentation, local and `file:` pictures, RTF → HTML with filled-in placeholders): 28 checks | All pass |
-| Button-file tests (current 19-button file round trip, older `%IMG%` and `%HTML%` buttons, RTF-only saving, `rawText`, split placeholders): 12 checks | All pass; the file is saved byte-for-byte unchanged |
+| New button file (4 buttons; editor saves every unedited button unchanged; Signature opens from its RTF; RTF and HTML have the same text and the same 134 × 29 logo; HTML rebuilt from the RTF, see finding 5): 6 checks | All pass |
+| Button-file tests (the earlier 19-button file round trip, older `%IMG%` and `%HTML%` buttons, RTF-only saving, `rawText`, split placeholders): 12 checks | All pass; the file is saved byte-for-byte unchanged |
 | JSON parser tests (valid and invalid numbers, nesting limit, 200,000-deep input, raw tabs): 20 checks | All pass |
 | All native tests run under AddressSanitizer and UndefinedBehaviorSanitizer | No memory or undefined-behavior errors |
 | User interface on real Windows | **Not yet tested** (see finding 1) |
@@ -335,11 +349,12 @@ Both programs are single-file, pure Win32 applications with no external librarie
 
 ## 10. Checklist for the first run on Windows
 
-1. Build both projects and put the two .exe files in one folder.
-2. Start Clippi. The groups and buttons from your file should appear. Press a button with a prompt, then Paste into Notepad.
-3. Press **Edit Clips**. Pick a button, select a word, press **B**, then **Save**. The list should show `[formatted]`.
-4. Back in Clippi (it reloads automatically), press that button and paste into **Outlook** (bold, from the RTF), **Teams** (bold, from the HTML Clippi makes) and **Notepad** (plain).
-5. In the editor, copy formatted text and a table from a web page or Teams and paste them with Ctrl+V. Then paste a screenshot (Win+Shift+S, then Ctrl+V). Right-click with an empty clipboard: *Paste* should be greyed out.
-6. Insert a link (Link…) and a picture (Picture…), save, and paste the button into Outlook and Teams.
-7. Move the Clippi window to a monitor with different scaling; it should re-lay itself out sharply.
-8. Check Explorer › Properties › Details for both .exe files: File version and Product version should read 1.2.1.
+1. Rename `_ClipBoardButtonDefinitions.json` to `ClipBoardButtonDefinitions.json`, build both projects and put the two .exe files in one folder.
+2. Start Clippi. The groups and buttons from your file should appear. Press *Are you ready* (it asks for the software name), then Paste into Notepad.
+3. Press *Signature* and paste into a new **Outlook** message, a **Teams** chat (try dark mode too, see finding 4) and **Notepad**. Outlook and Teams should show the red company line and the logo.
+4. Press **Edit Clips**. Pick *Done*, select a word, press **B**, then **Save**. The list should show `[formatted]`.
+5. Back in Clippi (it reloads automatically), press that button and paste into **Outlook** (bold, from the RTF), **Teams** (bold, from the HTML Clippi makes) and **Notepad** (plain).
+6. In the editor, copy formatted text and a table from a web page or Teams and paste them with Ctrl+V. Then paste a screenshot (Win+Shift+S, then Ctrl+V). Right-click with an empty clipboard: *Paste* should be greyed out.
+7. Insert a link (Link…) and a picture (Picture…), save, and paste the button into Outlook and Teams.
+8. Move the Clippi window to a monitor with different scaling; it should re-lay itself out sharply.
+9. Check Explorer › Properties › Details for both .exe files: File version and Product version should read 1.2.1. Switch Explorer to *Extra large icons*: the icon should be sharp.
