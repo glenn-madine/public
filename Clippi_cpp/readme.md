@@ -53,7 +53,7 @@ Compile the resource files with `windres` and link them in to get the icon, vers
 
 ### Changing the version
 
-Edit `resource.h`. The three numbers and the two strings must match (see finding 1 in section 8):
+Edit `resource.h`. The three numbers and the two strings must match; Explorer shows the numbers, while the title bar and About box show the strings:
 
 ```
 #define APP_VERSION_MAJOR 1
@@ -251,7 +251,7 @@ Both programs are single-file, pure Win32 applications with no external librarie
 
 | # | Severity | Finding | Recommendation |
 |---|---|---|---|
-| 1 | **Fix** | `resource.h` has `APP_VERSION_MINOR 1` but the strings say `"1.2.0"`. The title bar and About box show 1.2.0, but Explorer's numeric file version (`FILEVERSION`) shows 1.1.0.0. | Set `APP_VERSION_MINOR 2`. Optionally build the strings from the numbers with a stringize macro so they can't drift. |
+| 1 | **Fixed** | `resource.h` had `APP_VERSION_MINOR 1` while the strings said `"1.2.0"`, so Explorer's numeric file version (`FILEVERSION`) showed 1.1.0.0. Now set to `2`; all version numbers read 1.2.0 after a rebuild. | Optionally build the strings from the numbers with a stringize macro so they can't drift again. |
 | 2 | Medium | The Rich Edit parts of Clippi Editor (the box, toolbar, formatted paste, dialogs) compile but have not been run on Windows. The test environment's Wine would not start. The converters and JSON handling were tested (see section 9). | Run the checklist in section 10 once on a real PC. |
 | 3 | Low | Clippi refuses button files over 16 MB; the editor accepts up to 32 MB. A file with many large pictures could save in the editor but fail to load in Clippi. | Use the same limit in both programs (32 MB). |
 | 4 | Low | Clippi is per-monitor DPI aware; the editor is only system-DPI aware (`SetProcessDPIAware`), so it looks blurry on a second monitor with different scaling. | Port Clippi's DPI helpers to the editor. |
@@ -305,4 +305,4 @@ Both programs are single-file, pure Win32 applications with no external librarie
 5. In the editor, copy some formatted text from Teams or a web page and paste it into the box with Ctrl+V. Then paste a screenshot (Win+Shift+S, then Ctrl+V).
 6. Insert a link (Link…) and a picture (Picture…), save, and paste the button into Outlook and Teams.
 7. Move the Clippi window to a monitor with different scaling; it should re-lay itself out sharply.
-8. Check Explorer › Properties › Details for both .exe files after fixing finding 1.
+8. Check Explorer › Properties › Details for both .exe files: File version and Product version should both read 1.2.0.
