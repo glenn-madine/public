@@ -1,20 +1,21 @@
-// DDLaunchEdit.rc -- resources for DDLaunch+ Editor v1.0.1
+// DDLaunchEdit.rc -- resources for DDLaunch+ Editor (version from version.h)
 //
 // Build:  rc /nologo DDLaunchEdit.rc      (produces DDLaunchEdit.res)
 // Then link DDLaunchEdit.res with /MANIFEST:NO (see DDLaunchEdit.cpp header).
 
 #include <windows.h>
 #include "resource.h"
+#include "version.h"   // DDLAUNCHEDIT_VERSION_*, DDLAUNCH_AUTHOR
 
-// Same icon as DDLaunch+ (IDI_ICON1 in resource.h).
+// Same icon as DDLaunch+ (IDI_ICON1 in resource.h), 16 to 256 px.
 IDI_ICON1 ICON "DDLaunch.ico"
 
 // Application manifest -- the only manifest source for the .exe.
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "DDLaunchEdit.manifest"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION     1,0,1,0
- PRODUCTVERSION  1,0,1,0
+ FILEVERSION     DDLAUNCHEDIT_VERSION_RC
+ PRODUCTVERSION  DDLAUNCHEDIT_VERSION_RC
  FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
  FILEFLAGS       0x0L
  FILEOS          VOS_NT_WINDOWS32
@@ -25,13 +26,13 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName",      "Glenn Madine"
+            VALUE "CompanyName",      DDLAUNCH_AUTHOR
             VALUE "FileDescription",  "DDLaunch+ Editor - edits connections.json and actionDefinitions.json"
-            VALUE "FileVersion",      "1.0.1.0"
+            VALUE "FileVersion",      DDLAUNCHEDIT_VERSION_STR
             VALUE "InternalName",     "DDLaunchEdit"
             VALUE "OriginalFilename", "DDLaunchEdit.exe"
             VALUE "ProductName",      "DDLaunch+"
-            VALUE "ProductVersion",   "1.0.1.0"
+            VALUE "ProductVersion",   DDLAUNCHEDIT_VERSION_STR
         END
     END
     BLOCK "VarFileInfo"

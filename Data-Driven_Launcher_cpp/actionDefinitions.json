@@ -1,58 +1,62 @@
 [
     {
         "action": "RDP",
-		"args": " /v:",
+        "args": " /v:",
         "command": "C:\\Windows\\System32\\MSTSC.exe"
     },
     {
         "action": "SSH",
-		"args": " ",
+        "args": " ",
         "command": "C:\\Program Files\\PuTTY\\putty.exe"
     },
     {
         "action": "VNC",
-		"args": " ",
+        "args": " ",
         "command": "C:\\Program Files\\RealVNC\\VNC Viewer\\vncviewer.exe"
     },
     {
         "action": "HTTPS",
-		"args": "",
+        "args": "",
         "command": "https://"
     },
     {
         "action": "HTTP",
-		"args": "",
+        "args": "",
         "command": "http://"
     },
     {
         "action": "FTP",
-		"args": "",
+        "args": "",
         "command": "ftp://"
     },
     {
         "action": "SFTP",
-		"args": " sftp://",
+        "args": " sftp://",
         "command": "C:\\Program Files (x86)\\WinSCP\\WinSCP.exe"
     },
     {
         "action": "START",
-	"args": " ",
+        "args": " ",
         "command": "C:\\Windows\\Explorer.exe"
     },
     {
         "action": "SHELL",
-	"args": " Shell:",
+        "args": " Shell:",
         "command": "C:\\Windows\\Explorer.exe"
     },
     {
         "action": "CMD",
-	"args": " /k ",
+        "args": " /k ",
         "command": "C:\\Windows\\System32\\CMD.exe"
     },
     {
+        "action": "PowerShell",
+        "args": "  -NoExit -command ",
+        "command": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+    },
+    {
         "action": "InPrivate",
-		"args": " --inprivate --new-window --no-first-run https://",
-        "command": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" 
+        "args": " --inprivate --new-window --no-first-run https://",
+        "command": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
     }
-
 ]

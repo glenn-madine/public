@@ -1,7 +1,49 @@
-// Data-Driven Launcher+ version 2.7.0
+// Data-Driven Launcher+ version 2.7.1
 // C++ (Win32 API)
 // Author: Glenn Madine
-// Release_Date: 11/15/2026
+// Release_Date: 11/26/2026
+// Changes in 2.7.1:
+//   - R15: Code shared with the DDLaunch+ Editor (text, file, URL/quoting,
+//          launch and DPI helpers) moved to DDCommon.h, so the Editor's
+//          "Launches:" preview is built by the same code DDLaunch+ uses.
+//   - R16: Version numbers, release dates and the author live only in
+//          version.h, which this file and DDLaunch.rc both include.
+//   - B20: actionDefinitions.json: an entry without "args" (or "command" /
+//          "action") no longer makes the whole file fail -- missing values
+//          count as empty. Entries that aren't objects, or whose values
+//          aren't text, are skipped and listed once in a warning.
+//   - B21: Environment variables (%OneDrive%, %USERPROFILE% ...) in a host,
+//          command or args are expanded before launching.
+//   - B22: connections.json whose top level is neither an array nor an object
+//          of groups is reported as an error (the previous list is kept)
+//          instead of silently emptying the list.
+//   - B23: Entries in connections.json that aren't objects (and group values
+//          that aren't arrays or objects) are listed once in a warning
+//          instead of disappearing silently.
+//   - B24: Hosts are trimmed before launching, so " dc1" isn't passed as
+//          /v:" dc1".
+//   - B25: For program actions whose args end in a URL prefix (InPrivate
+//          "... https://", SFTP " sftp://", SHELL " Shell:"), a host that is
+//          already a full URL is no longer doubled ("https://https://...").
+//   - B26: The tree/list splitter only starts a drag inside the list area,
+//          not from the strip beside the buttons.
+//   - B27: When the group tree is hidden (the file became a flat array) while
+//          it had keyboard focus, focus moves to the list.
+//   - B28: The selected connection is remembered while browsing groups: going
+//          back to a group that contains it (or to All) selects it again.
+//   - B29: About box: the "·" is written as · and both programs are
+//          compiled with /utf-8, so it no longer shows as "Â·".
+//   - F8:  Clicking the sorted column a third time returns to file order.
+//   - R17: WS_CLIPCHILDREN on the main window (less flicker when resizing).
+//   - R18: settings.json is read once at startup instead of three times.
+//   - R19: The .exe folder is found with a growing buffer (paths longer than
+//          MAX_PATH work).
+//   - R20: The "Unknown type" message lists each defined action once (no
+//          blanks or duplicates), A-Z.
+//   - R21: Unused WM_LAUNCH removed; C-style (HMENU) cast replaced; stale
+//          button captions in comments and messages updated.
+//   - R22: DDLaunch.ico now holds 16-256 px 32-bit images, so the window,
+//          taskbar and About box icons are sharp at every DPI.
 // Changes in 2.7.0:
 //   - F7: Group tree. When connections.json uses named groups
 //         ({ "RDP connections": [ ... ], "SSH connections": [ ... ] }), a tree
@@ -26,6 +68,7 @@
 //         tab when it is in the same folder as DDLaunch.exe. Without it (or
 //         if it can't be started) they open Notepad as before. Changes saved
 //         in the editor are picked up when you switch back to DDLaunch+.
+//         (The buttons are now captioned "Edit Connections" / "Edit Actions".)
 // Changes in 2.5.0:
 //   - F4: Host box history. The Host box is now an editable dropdown that
 //         remembers the hosts launched with Go (most recent first, up to 25,
@@ -45,6 +88,7 @@
 //         not in this list" swapped places: Edit actionDefinitions.json is
 //         now on the left of the middle row (above Edit connections.json) and
 //         Launch RDP on the right. Tab order follows the new layout.
+//         (Since renamed "Edit Actions" and "Edit Connections".)
 // Changes in 2.4.0:
 //   - F1: Quick-launch row above the buttons: a "Host" text box, an "Action"
 //         dropdown filled from actionDefinitions.json, and a "Go" button.
@@ -163,14 +207,16 @@
 // Compiled using Microsoft C++ 19.51
 // Config files: %USERPROFILE%\DDLaunch\actionDefinitions.json and
 //               %USERPROFILE%\DDLaunch\connections.json
-//               %USERPROFILE%\DDLaunch\settings.json (window placement,
-//               written on exit)
+//               %USERPROFILE%\DDLaunch\settings.json (window placement, Host
+//               box history, group tree; written on exit and whenever the
+//               history changes)
 //               (folder and files are created automatically if missing)
-// Build files: DDLaunch.cpp, DDLaunch.rc, DDLaunch.manifest, resource.h,
-//              DDLaunch.ico, json.hpp
-// Compile and link command lines:
+// Build files: DDLaunch.cpp, DDCommon.h, version.h, DDLaunch.rc,
+//              DDLaunch.manifest, resource.h, DDLaunch.ico, json.hpp
+// Compile and link command lines (Compile.cmd builds both programs):
 //     rc /nologo DDLaunch.rc
-//     CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 DDLaunch.cpp DDLaunch.res /Fe:DDLaunch.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:NO comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib
+//     CL /nologo /utf-8 /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 DDLaunch.cpp DDLaunch.res /Fe:DDLaunch.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:NO comctl32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib oleaut32.lib
+// /utf-8: the source files are UTF-8 without a byte-order mark (B29).
 // The manifest comes only from DDLaunch.rc (see R11 above); /MANIFEST:NO
 // stops the linker adding a second one. In a Visual Studio project, set
 // Linker > Manifest File > Generate Manifest = No.
@@ -199,6 +245,8 @@
 #include <cstdint>    // uintptr_t (R2)
 #include "json.hpp"   // nlohmann/json single-header
 #include "resource.h"
+#include "version.h"  // version, release date, author (R16)
+#include "DDCommon.h" // helpers shared with the Editor (R15)
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -216,25 +264,24 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-#define VERSION         		L"v2.7.0"
-#define IDC_LISTVIEW        	1001
-#define IDC_BTN_RDP         	1002
-#define IDC_BTN_EXIT        	1003
-#define IDC_BTN_EDIT_CONN   	1004
-#define IDC_BTN_EDIT_ACTIONS	1005
-#define IDC_BTN_RUN         	1006
-#define IDC_LBL_HOST        	1007
-#define IDC_HOST_BOX       	1008
-#define IDC_LBL_ACTION      	1009
-#define IDC_COMBO_ACTION    	1010
-#define IDC_BTN_GO          	1011
-#define IDC_LINK_ABOUT      	1012
-#define IDC_GROUP_TREE      	1013
+#define VERSION                 L"v" DDLAUNCH_VERSION_SHORT   // from version.h (R16)
+#define IDC_LISTVIEW            1001
+#define IDC_BTN_RDP             1002
+#define IDC_BTN_EXIT            1003
+#define IDC_BTN_EDIT_CONN       1004
+#define IDC_BTN_EDIT_ACTIONS    1005
+#define IDC_BTN_RUN             1006
+#define IDC_LBL_HOST            1007
+#define IDC_HOST_BOX            1008
+#define IDC_LBL_ACTION          1009
+#define IDC_COMBO_ACTION        1010
+#define IDC_BTN_GO              1011
+#define IDC_LINK_ABOUT          1012
+#define IDC_GROUP_TREE          1013
 
-// Shown in the About box (F6). Keep in step with the header and DDLaunch.rc.
-#define APP_AUTHOR          	L"Glenn Madine"
-#define APP_RELEASE_DATE    	L"11/15/2026"
-#define WM_LAUNCH				(WM_USER + 1)
+// Shown in the About box (F6); defined once in version.h (R16).
+#define APP_AUTHOR              L"" DDLAUNCH_AUTHOR
+#define APP_RELEASE_DATE        L"" DDLAUNCH_RELEASE_DATE
 
 // Column indices
 #define COL_HOST		0
@@ -243,133 +290,80 @@
 
 using json = nlohmann::json;
 
-// --- UTF-8 (std::string, what's in the JSON file) <-> UTF-16 -------------
-// (std::wstring, what Windows wide APIs use) conversion helpers.
+// Text, file, URL and DPI helpers (Utf8ToWide, ReadFileUtf8, FileStamp,
+// BuildLaunch, Dpi::...) are in DDCommon.h, shared with the Editor (R15).
 
-std::wstring Utf8ToWide(const std::string& utf8) {
-    if (utf8.empty()) {
-        return std::wstring();
-    }
-    int required = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
-                                        nullptr, 0);
-    if (required <= 0) {
-        throw std::runtime_error("UTF-8 to UTF-16 conversion failed");
-    }
-    std::wstring wide(static_cast<size_t>(required), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), &wide[0], required);
-    return wide;
-}
-
-std::string WideToUtf8(const std::wstring& wide) {
-    if (wide.empty()) {
-        return std::string();
-    }
-    int required = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()),
-                                        nullptr, 0, nullptr, nullptr);
-    if (required <= 0) {
-        throw std::runtime_error("UTF-16 to UTF-8 conversion failed");
-    }
-    std::string utf8(static_cast<size_t>(required), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), &utf8[0], required,
-                         nullptr, nullptr);
-    return utf8;
-}
-
-// Text of a std::exception for a wide message box (B10). Exception messages
-// built by this file and by nlohmann::json are UTF-8 (they can contain file
-// paths from the user's profile), so they must not go to MessageBoxA, which
-// would read them in the ANSI code page. Never throws.
-std::wstring ExceptionText(const std::exception& e) {
-    try {
-        return Utf8ToWide(e.what());
-    } catch (...) {
-        return L"(error text could not be converted)";
-    }
-}
-
-// --- 1. The structure that mirrors each entry in the JSON array -----------
+// ---------------------------------------------------------------------------
+// Actions (actionDefinitions.json)
+// ---------------------------------------------------------------------------
 struct Action {
-    std::wstring action;	// e.g. L"RDP"
-    std::wstring args;		// e.g. L" /v:" note the space before /v: 
-    std::wstring command;	// e.g. L"C:\\Windows\\System32\\MSTSC.exe"
+    std::wstring action;   // e.g. L"RDP"
+    std::wstring args;     // e.g. L" /v:"  note the space before /v:
+    std::wstring command;  // e.g. L"C:\\Windows\\System32\\MSTSC.exe"
 };
 
-// The JSON layer still deals in UTF-8 std::string (that's what's on disk
-// and what nlohmann::json's default json type holds) -- this is where the
-// UTF-8 -> UTF-16/wstring conversion happens.
-void from_json(const json& j, Action& a) {
-    std::string actionUtf8, argsUtf8, commandUtf8;
-    j.at("action").get_to(actionUtf8);  
-    j.at("args").get_to(argsUtf8); 
-    j.at("command").get_to(commandUtf8);
-    a.action = Utf8ToWide(actionUtf8);
-    a.args = Utf8ToWide(argsUtf8);    
-    a.command = Utf8ToWide(commandUtf8);
-}
-
-// (No to_json(Action): the app only reads actionDefinitions.json, it never
-// writes it.)
-
-// --- 2. Read the raw file bytes via Win32 (CreateFileW/ReadFile) ----------
-// so the path itself can be a std::wstring without depending on the
-// MSVC-only std::ifstream(wchar_t*) extension.
-std::string ReadFileUtf8(const std::wstring& filePath) {
-    // B17: share write/delete too, so the read succeeds while an editor still
-    // has the file open (or is replacing it). A file caught mid-save just
-    // fails to parse once; its stamp changes again when the save completes.
-    HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_READ,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        throw std::runtime_error("Could not open file: " + WideToUtf8(filePath));
-    }
-
-    LARGE_INTEGER size{};
-    if (!GetFileSizeEx(hFile, &size)) {
-        CloseHandle(hFile);
-        throw std::runtime_error("Could not get file size: " + WideToUtf8(filePath));
-    }
-
-    std::string buffer(static_cast<size_t>(size.QuadPart), '\0');
-    DWORD bytesRead = 0;
-    BOOL ok = ReadFile(hFile, buffer.empty() ? nullptr : &buffer[0],
-                        static_cast<DWORD>(buffer.size()), &bytesRead, nullptr);
-    CloseHandle(hFile);
-
-    if (!ok || bytesRead != buffer.size()) {
-        throw std::runtime_error("Failed reading file: " + WideToUtf8(filePath));
-    }
-    return buffer;
-}
-
-// --- 3. Function that opens the file and returns the parsed array ---------
-std::vector<Action> loadActions(const std::wstring& filePath) {
-    std::string utf8Contents = ReadFileUtf8(filePath);
-
-    json j = json::parse(utf8Contents);
+// B20: read tolerantly. A missing (or null) "action", "args" or "command"
+// counts as empty -- a URL action has no use for "args". An entry that isn't
+// an object, or has a value that isn't text, is skipped and described in
+// `warnings` (one bullet line each), so one bad entry no longer rejects the
+// whole file. Throws only if the file can't be read, isn't valid JSON, or
+// isn't a JSON array.
+std::vector<Action> loadActions(const std::wstring& filePath, std::wstring& warnings) {
+    const json j = json::parse(ReadFileUtf8(filePath));
     if (!j.is_array()) {
-        throw std::runtime_error("Expected top-level JSON array in " + WideToUtf8(filePath));
+        throw std::runtime_error("Expected a top-level JSON array [ ... ] in " + WideToUtf8(filePath));
     }
 
-    return j.get<std::vector<Action>>();
+    std::vector<Action> actions;
+    warnings.clear();
+    size_t entry = 0;
+    for (const json& e : j) {
+        ++entry;
+        const std::wstring where = L"\n  \u2022 Entry " + std::to_wstring(entry);
+        if (!e.is_object()) {
+            warnings += where + L" is not an object { ... }";
+            continue;
+        }
+        Action a;
+        bool ok = true;
+        auto field = [&](const char* key, std::wstring& out) {
+            const auto it = e.find(key);
+            if (it == e.end() || it->is_null()) return;  // missing: empty
+            if (!it->is_string()) {
+                warnings += where + L": \"" + Utf8ToWide(key) + L"\" is not text (put it in quotes)";
+                ok = false;
+                return;
+            }
+            out = Utf8ToWide(it->get<std::string>());
+        };
+        field("action", a.action);
+        field("args", a.args);
+        field("command", a.command);
+        if (ok) actions.push_back(std::move(a));
+    }
+    return actions;
 }
 
-// --- 4. Search / lookup: find the action entry for a given name -----------
-// Returns the first action whose name matches actionName, ignoring case
-// (B5), or nullptr if there is none. CompareStringOrdinal with
-// bIgnoreCase = TRUE compares code points using the operating system's
-// invariant upper-case table -- the same rule the file system uses -- so the
-// result does not depend on the user's locale (unlike _wcsicmp / towupper).
-static bool EqualsIgnoreCase(const std::wstring& a, const std::wstring& b) {
-    return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()),
-                                b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
-}
-
+// First action whose name matches actionName ignoring case (B5), or nullptr.
 const Action* findAction(const std::vector<Action>& actions, const std::wstring& actionName) {
     auto it = std::find_if(actions.begin(), actions.end(), [&actionName](const Action& a) {
         return EqualsIgnoreCase(a.action, actionName);
     });
     return it == actions.end() ? nullptr : &*it;
+}
+
+// Each defined action name once (no blanks, first of any case-insensitive
+// duplicates), sorted A-Z ignoring case. Used by the Action dropdown and the
+// "Unknown type" message (R20).
+static std::vector<std::wstring> UniqueActionNames(const std::vector<Action>& actions) {
+    std::vector<std::wstring> names;
+    for (const Action& a : actions) {
+        if (!Trim(a.action).empty() && findAction(actions, a.action) == &a) {
+            names.push_back(a.action);
+        }
+    }
+    std::stable_sort(names.begin(), names.end(), LessIgnoreCase);
+    return names;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,27 +387,16 @@ static std::wstring ToUpper(std::wstring s) {
 }
 
 // ---------------------------------------------------------------------------
-// Get the directory of the running executable
-// ---------------------------------------------------------------------------
-static std::wstring GetExeDir() {
-    wchar_t buf[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    PathRemoveFileSpecW(buf);
-    return std::wstring(buf);
-}
-
-// ---------------------------------------------------------------------------
 // Load connections.json
 // ---------------------------------------------------------------------------
-// hOwner parents the error boxes so they are modal to the main window.
-// Returns std::nullopt if the file can't be read or isn't valid JSON, so the
-// caller can keep the list it already has (B8).
+// hOwner parents the message boxes so they are modal to the main window.
+// Returns std::nullopt if the file can't be read, isn't valid JSON, or its top
+// level is neither an array of connections nor an object of named groups
+// (B22), so the caller can keep the list it already has (B8). Values that
+// aren't connection objects are skipped and listed once in a warning (B23).
 static std::optional<std::vector<Device>> LoadConnections(HWND hOwner, const std::wstring& jsonPath) {
     std::vector<Device> devices;
 
-    // Read via Win32 (ReadFileUtf8) instead of std::ifstream so the path can
-    // contain non-ASCII characters -- important now that the file lives under
-    // %USERPROFILE%, which frequently includes the user's real name.
     std::string contents;
     try {
         contents = ReadFileUtf8(jsonPath);
@@ -425,13 +408,30 @@ static std::optional<std::vector<Device>> LoadConnections(HWND hOwner, const std
         return std::nullopt;
     }
 
+    // B23: skipped values, one bullet line each (the first 10 are listed).
+    std::wstring skipped;
+    int skippedCount = 0;
+    auto skip = [&](const std::wstring& what) {
+        if (++skippedCount <= 10) skipped += L"\n  • " + what;
+    };
+
     try {
         // F7: ordered_json keeps the groups in file order (nlohmann::json
         // would sort the object keys A-Z), for the tree and the unsorted list.
-        nlohmann::ordered_json data = nlohmann::ordered_json::parse(contents);
+        const nlohmann::ordered_json data = nlohmann::ordered_json::parse(contents);
+        if (!data.is_object() && !data.is_array()) {  // B22
+            throw std::runtime_error(
+                "The top level must be an array [ ... ] of connections, or an object "
+                "{ \"Group name\": [ ... ] } of named groups.");
+        }
 
-        auto parseDevice = [&](const nlohmann::ordered_json& obj, const std::wstring& group) {
-            if (!obj.is_object()) return;
+        // `pos` is the entry's 1-based position in its array, for messages.
+        auto parseDevice = [&](const nlohmann::ordered_json& obj, const std::wstring& group, size_t pos) {
+            if (!obj.is_object()) {
+                skip((group.empty() ? std::wstring(L"Entry ") : L"\"" + group + L"\" entry ") +
+                     std::to_wstring(pos) + L" is not an object { ... }");
+                return;
+            }
             Device d;
             d.group = group;                                   // F7
             d.fileIndex = static_cast<int>(devices.size());
@@ -448,21 +448,40 @@ static std::optional<std::vector<Device>> LoadConnections(HWND hOwner, const std
             // Each key is a group name (F7), e.g. "RDP connections".
             for (auto& [key, val] : data.items()) {
                 const std::wstring group = Utf8ToWide(key);
-                if (val.is_object())      parseDevice(val, group);
-                else if (val.is_array())  for (auto& item : val) parseDevice(item, group);
+                if (val.is_object()) {
+                    parseDevice(val, group, 1);
+                } else if (val.is_array()) {
+                    size_t pos = 0;
+                    for (auto& item : val) parseDevice(item, group, ++pos);
+                } else {
+                    skip(L"Group \"" + group + L"\" is not an array [ ... ] of connections");
+                }
             }
-        } else if (data.is_array()) {
-            for (auto& item : data) parseDevice(item, std::wstring());
+        } else {
+            size_t pos = 0;
+            for (auto& item : data) parseDevice(item, std::wstring(), ++pos);
         }
 
     } catch (const std::exception& e) {
         MessageBoxW(hOwner,
-            (L"connections.json is not valid JSON:\n\n" + ExceptionText(e) +
+            (L"connections.json is not valid:\n\n" + ExceptionText(e) +
              L"\n\nThe previously loaded list is kept until the file is fixed.").c_str(),
             L"DDLaunch+ JSON Error", MB_ICONERROR | MB_OK);
         return std::nullopt;
     }
 
+    if (skippedCount > 0) {
+        if (skippedCount > 10) {
+            skipped += L"\n  …and " + std::to_wstring(skippedCount - 10) + L" more";
+        }
+        MessageBoxW(hOwner,
+            (L"connections.json: " + std::to_wstring(skippedCount) +
+             (skippedCount == 1 ? L" value was" : L" values were") +
+             L" skipped because they aren't connections:" + skipped +
+             L"\n\nEach connection must be an object such as\n"
+             L"{ \"host\": \"server01\", \"type\": \"RDP\", \"description\": \"...\" }").c_str(),
+            L"DDLaunch+ - Entries skipped", MB_ICONWARNING | MB_OK);
+    }
     return devices;
 }
 
@@ -471,45 +490,9 @@ static std::optional<std::vector<Device>> LoadConnections(HWND hOwner, const std
 //
 // Both configs live in a per-user data folder: %USERPROFILE%\DDLaunch
 // (e.g. C:\Users\glenn\DDLaunch). The folder and both files are created on
-// demand by EnsureDataFiles() if they don't exist.
+// demand by EnsureDataFiles() if they don't exist. GetDataDir() is in
+// DDCommon.h.
 // ---------------------------------------------------------------------------
-
-// Resolve %USERPROFILE%. Falls back to the shell's Profile known folder if the
-// environment variable is missing (e.g. launched from a stripped environment).
-// Returns L"" if neither can be determined.
-static std::wstring GetUserProfileDir() {
-    DWORD needed = GetEnvironmentVariableW(L"USERPROFILE", nullptr, 0);
-    if (needed > 0) {
-        std::wstring buf(needed, L'\0');
-        DWORD len = GetEnvironmentVariableW(L"USERPROFILE", &buf[0], needed);
-        if (len > 0 && len < needed) {
-            buf.resize(len);
-            return buf;
-        }
-    }
-
-    PWSTR knownPath = nullptr;
-    std::wstring result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &knownPath)) && knownPath) {
-        result = knownPath;
-    }
-    CoTaskMemFree(knownPath);
-    return result;
-}
-
-// %USERPROFILE%\DDLaunch (no trailing backslash). If the profile directory
-// can't be resolved at all, fall back to the folder containing the .exe so
-// the app still has somewhere to keep its configs.
-static std::wstring GetDataDir() {
-    std::wstring profile = GetUserProfileDir();
-    if (profile.empty()) {
-        return GetExeDir();
-    }
-    if (profile.back() == L'\\' || profile.back() == L'/') {
-        profile.pop_back();
-    }
-    return profile + L"\\DDLaunch";
-}
 
 static std::wstring GetConnectionsJsonPath() {
     return GetDataDir() + L"\\connections.json";
@@ -556,17 +539,8 @@ static const char* const DEFAULT_ACTIONS_JSON =
 static const char* const DEFAULT_CONNECTIONS_JSON = "[]\n";
 
 // ---------------------------------------------------------------------------
-// File / folder helpers
+// File / folder helpers (FileExists / DirectoryExists are in DDCommon.h)
 // ---------------------------------------------------------------------------
-static bool FileExists(const std::wstring& path) {
-    DWORD attrs = GetFileAttributesW(path.c_str());
-    return (attrs != INVALID_FILE_ATTRIBUTES) && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-static bool DirectoryExists(const std::wstring& path) {
-    DWORD attrs = GetFileAttributesW(path.c_str());
-    return (attrs != INVALID_FILE_ATTRIBUTES) && (attrs & FILE_ATTRIBUTE_DIRECTORY);
-}
 
 static bool CreateFileWithDefaultContent(const std::wstring& path, const std::string& utf8Content) {
     HANDLE hFile = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
@@ -656,50 +630,6 @@ static void OpenJsonFileForEditing(HWND hWnd, const std::wstring& path, const wc
 }
 
 // ---------------------------------------------------------------------------
-// Generic URL detection (B4)
-//
-// Returns true if `text` starts with a URI scheme as defined by RFC 3986:
-//
-//     scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"
-//
-// This replaces the old hard-coded list (https/http/ftp/file/mailto/tel),
-// which also had an off-by-one on "file://" (compared 8 chars to a 7-char
-// literal) and so never matched "file:///...". Any scheme now works --
-// https://, file:///, ssh://, vnc://, rdp://, mailto:, tel:, ms-settings:,
-// etc. -- as long as Windows has a handler registered for it.
-//
-// Schemes must be at least two characters long so that a Windows drive
-// letter ("C:\Windows\System32\mstsc.exe", "D:foo.exe") is treated as a
-// file path, not a URL. Plain names ("ssh.exe") and UNC paths
-// ("\\server\share\tool.exe") contain no scheme and are also paths.
-// Only ASCII is accepted, per the RFC, so the check is locale-independent.
-// ---------------------------------------------------------------------------
-static bool IsAsciiAlpha(wchar_t c) {
-    return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
-}
-
-static bool IsAsciiDigit(wchar_t c) {
-    return c >= L'0' && c <= L'9';
-}
-
-static bool StartsWithUrlScheme(const std::wstring& text) {
-    const size_t colon = text.find(L':');
-    if (colon == std::wstring::npos || colon < 2) {
-        return false;  // no scheme, or a single drive letter like "C:"
-    }
-    if (!IsAsciiAlpha(text[0])) {
-        return false;
-    }
-    for (size_t i = 1; i < colon; ++i) {
-        const wchar_t c = text[i];
-        if (!IsAsciiAlpha(c) && !IsAsciiDigit(c) && c != L'+' && c != L'-' && c != L'.') {
-            return false;
-        }
-    }
-    return true;
-}
-
-// ---------------------------------------------------------------------------
 // Launching with error reporting (B3)
 //
 // Uses ShellExecuteExW instead of ShellExecuteW so failures come back as a
@@ -707,20 +637,6 @@ static bool StartsWithUrlScheme(const std::wstring& text) {
 // dialogs so DDLaunch+ can show one consistent message that names the host,
 // type, command and parameters involved.
 // ---------------------------------------------------------------------------
-
-// System error text for a Win32 error code, without the trailing CR/LF.
-static std::wstring GetErrorText(DWORD err) {
-    LPWSTR buf = nullptr;
-    DWORD len = FormatMessageW(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        nullptr, err, 0, reinterpret_cast<LPWSTR>(&buf), 0, nullptr);
-    std::wstring text = (len && buf) ? std::wstring(buf, len) : std::wstring(L"Unknown error.");
-    if (buf) LocalFree(buf);
-    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' ')) {
-        text.pop_back();
-    }
-    return text;
-}
 
 // Runs `file` (an executable or a URL) with optional parameters.
 // Returns ERROR_SUCCESS, or the Win32 error code if the launch failed.
@@ -763,106 +679,17 @@ static void ReportLaunchFailure(HWND hOwner, DWORD err, const std::wstring& what
     MessageBoxW(hOwner, msg.c_str(), L"DDLaunch+ - Launch failed", MB_ICONERROR | MB_OK);
 }
 
-// ---------------------------------------------------------------------------
-// Command-line quoting (B11)
-//
-// Returns `arg` unchanged if it has no spaces, tabs or quotes (the normal
-// case: "dc01.ynext.corp", "admin@pi01"). Otherwise wraps it in quotes using
-// the rules CommandLineToArgvW and the Microsoft C runtime use to split a
-// command line: backslashes are literal except directly before a quote,
-// where they must be doubled, and an embedded quote becomes \". This makes a
-// host such as "Lab PC 7" arrive as one argument; with args " /v:" the result
-// is  /v:"Lab PC 7", which parses as the single argument /v:Lab PC 7.
-// ---------------------------------------------------------------------------
-static std::wstring QuoteArgIfNeeded(const std::wstring& arg) {
-    if (arg.empty() || arg.find_first_of(L" \t\"") == std::wstring::npos) {
-        return arg;
-    }
-    std::wstring out = L"\"";
-    size_t backslashes = 0;
-    for (wchar_t c : arg) {
-        if (c == L'\\') {
-            ++backslashes;
-            continue;
-        }
-        if (c == L'"') {
-            out.append(backslashes * 2 + 1, L'\\');  // escape preceding \s and the quote
-        } else {
-            out.append(backslashes, L'\\');          // \s not before a quote are literal
-        }
-        out += c;
-        backslashes = 0;
-    }
-    out.append(backslashes * 2, L'\\');  // \s before the closing quote are doubled
-    out += L'"';
-    return out;
-}
-
-// ---------------------------------------------------------------------------
-// URL building for URL actions (B18)
-// ---------------------------------------------------------------------------
-
-// The scheme of `text` (the part before ':'), or L"" if it has none.
-static std::wstring UrlScheme(const std::wstring& text) {
-    return StartsWithUrlScheme(text) ? text.substr(0, text.find(L':')) : std::wstring();
-}
-
-// True if `host` is already a complete URL rather than something to append to
-// the action's prefix. It is if it has a scheme AND either the scheme is
-// followed by "//" ("http://pi01", "ssh://x") or it is the action's own scheme
-// ("mailto:a@b" for a "mailto:" action). This keeps "dc01:8443" (host:port,
-// which looks like scheme "dc01") being appended as before.
-static bool HostIsFullUrl(const std::wstring& host, const std::wstring& command) {
-    const std::wstring scheme = UrlScheme(host);
-    if (scheme.empty()) {
-        return false;
-    }
-    if (host.compare(scheme.size(), 3, L"://") == 0) {
-        return true;
-    }
-    const std::wstring cmdScheme = UrlScheme(command);
-    return !cmdScheme.empty() &&
-           CompareStringOrdinal(scheme.c_str(), static_cast<int>(scheme.size()),
-                                cmdScheme.c_str(), static_cast<int>(cmdScheme.size()),
-                                TRUE) == CSTR_EQUAL;
-}
-
-// Percent-encode the characters that are never valid anywhere in a URL
-// (RFC 3986): spaces and other control characters, and " < > ^ ` { | }.
-// Everything else -- including '/', '?', '#', ':', '%', '\' (file:/// paths)
-// and non-ASCII (internationalized names, handled by the browser) -- is left
-// alone so hosts, ports, paths, queries and fragments keep their meaning.
-static std::wstring EncodeUrlUnsafeChars(const std::wstring& text) {
-    static const wchar_t kHex[] = L"0123456789ABCDEF";
-    std::wstring out;
-    out.reserve(text.size());
-    for (wchar_t c : text) {
-        if (c <= 0x20 || c == 0x7F || wcschr(L"\"<>^`{|}", c) != nullptr) {
-            out += L'%';
-            out += kHex[(c >> 4) & 0xF];
-            out += kHex[c & 0xF];
-        } else {
-            out += c;
-        }
-    }
-    return out;
-}
-
 // command is either an executable (run with args + host as parameters) or
-// a URL prefix (command + host is opened with its registered handler).
+// a URL prefix (command + host is opened with its registered handler). The
+// rules -- environment variables, trimming, quoting, URL encoding -- are in
+// BuildLaunch() in DDCommon.h, which the Editor's preview also uses (R15).
 // Returns ERROR_SUCCESS or a Win32 error code; `file`/`params` receive what
 // was actually passed to the shell so the caller can report it.
 static DWORD LaunchSomething(HWND hOwner, const std::wstring& command, const std::wstring& args,
                              const std::wstring& host, std::wstring& file, std::wstring& params) {
-    if (StartsWithUrlScheme(command)) {
-        // B18: a full URL in "host" is used as-is, otherwise it is appended
-        // to the prefix; either way unsafe characters are encoded.
-        file = EncodeUrlUnsafeChars(HostIsFullUrl(host, command) ? host : command + host);
-        params.clear();
-    } else {
-        file   = command;
-        params = args + QuoteArgIfNeeded(host);  // B11
-    }
+    const LaunchSpec spec = BuildLaunch(command, args, host);
+    file   = spec.file;
+    params = spec.params;
     return ShellOpen(hOwner, file, params);
 }
 
@@ -888,155 +715,6 @@ static void ShowRunDialog(HWND hWnd) {
         swprintf_s(msg, L"Could not open the Run dialog (HRESULT 0x%08X).", static_cast<unsigned>(hr));
         MessageBoxW(hWnd, msg, L"DDLaunch+", MB_ICONERROR | MB_OK);
     }
-}
-
-// ---------------------------------------------------------------------------
-// DPI helpers
-//
-// The process is Per-Monitor V2 DPI aware (see EnableDpiAwareness), so all
-// sizes are in physical pixels and must be scaled from 96-DPI "design" values.
-// The newer DPI APIs are loaded dynamically so the .exe still starts on older
-// Windows versions, falling back to system-DPI behavior there.
-// ---------------------------------------------------------------------------
-namespace Dpi {
-
-const UINT kBase = USER_DEFAULT_SCREEN_DPI;  // 96
-
-template <typename Fn>
-static Fn LoadUser32(const char* name) {
-    return reinterpret_cast<Fn>(reinterpret_cast<void*>(
-        GetProcAddress(GetModuleHandleW(L"user32.dll"), name)));
-}
-
-// Call once, before any window is created. DDLaunch.manifest normally sets
-// Per-Monitor V2 already (the officially preferred way); this is a fallback
-// for builds without the manifest.
-static void EnableDpiAwareness() {
-    // Already DPI aware (set by the manifest): keep that setting.
-    if (IsProcessDPIAware()) {
-        return;
-    }
-
-    // Windows 10 1703+: Per-Monitor V2 (also scales non-client area,
-    // message boxes and common dialogs automatically).
-    using PFN_SetCtx = BOOL (WINAPI*)(HANDLE);
-    if (auto setCtx = LoadUser32<PFN_SetCtx>("SetProcessDpiAwarenessContext")) {
-        if (setCtx(reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4)))) {  // PER_MONITOR_AWARE_V2
-            return;
-        }
-    }
-    // Windows 8.1+: Per-Monitor (v1) via shcore.dll.
-    if (HMODULE shcore = LoadLibraryW(L"shcore.dll")) {
-        using PFN_SetAwareness = HRESULT (WINAPI*)(int);
-        auto setAwareness = reinterpret_cast<PFN_SetAwareness>(reinterpret_cast<void*>(
-            GetProcAddress(shcore, "SetProcessDpiAwareness")));
-        const bool ok = setAwareness && SUCCEEDED(setAwareness(2));  // PROCESS_PER_MONITOR_DPI_AWARE
-        FreeLibrary(shcore);
-        if (ok) return;
-    }
-    // Vista+: system DPI aware.
-    SetProcessDPIAware();
-}
-
-static UINT SystemDpi() {
-    HDC hdc = GetDC(nullptr);
-    UINT dpi = hdc ? static_cast<UINT>(GetDeviceCaps(hdc, LOGPIXELSX)) : kBase;
-    if (hdc) ReleaseDC(nullptr, hdc);
-    return dpi ? dpi : kBase;
-}
-
-// DPI of the monitor the window is on (Windows 10 1607+), else system DPI.
-static UINT ForWindow(HWND hWnd) {
-    using PFN_GetDpiForWindow = UINT (WINAPI*)(HWND);
-    static auto getDpi = LoadUser32<PFN_GetDpiForWindow>("GetDpiForWindow");
-    if (getDpi && hWnd) {
-        UINT dpi = getDpi(hWnd);
-        if (dpi) return dpi;
-    }
-    return SystemDpi();
-}
-
-static int Scale(int value, UINT dpi) {
-    return MulDiv(value, static_cast<int>(dpi), static_cast<int>(kBase));
-}
-
-// The user's message-box font (normally Segoe UI 9pt) at the given DPI.
-static HFONT CreateUiFont(UINT dpi) {
-    NONCLIENTMETRICSW ncm = {};
-    ncm.cbSize = sizeof(ncm);
-
-    using PFN_SPIForDpi = BOOL (WINAPI*)(UINT, UINT, PVOID, UINT, UINT);
-    static auto spiForDpi = LoadUser32<PFN_SPIForDpi>("SystemParametersInfoForDpi");
-    if (spiForDpi && spiForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi)) {
-        return CreateFontIndirectW(&ncm.lfMessageFont);
-    }
-    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
-        // Metrics are reported at system DPI; rescale to the target DPI.
-        ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight,
-                                            static_cast<int>(dpi), static_cast<int>(SystemDpi()));
-        return CreateFontIndirectW(&ncm.lfMessageFont);
-    }
-    return nullptr;
-}
-
-// Window size needed for a given client size at the given DPI.
-static SIZE WindowSizeForClient(HWND hWnd, int clientW, int clientH, UINT dpi) {
-    RECT rc = { 0, 0, clientW, clientH };
-    const DWORD style   = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_STYLE));
-    const DWORD exStyle = static_cast<DWORD>(GetWindowLongPtrW(hWnd, GWL_EXSTYLE));
-
-    using PFN_AdjustForDpi = BOOL (WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
-    static auto adjustForDpi = LoadUser32<PFN_AdjustForDpi>("AdjustWindowRectExForDpi");
-    if (!(adjustForDpi && adjustForDpi(&rc, style, FALSE, exStyle, dpi))) {
-        AdjustWindowRectEx(&rc, style, FALSE, exStyle);
-    }
-    return SIZE{ rc.right - rc.left, rc.bottom - rc.top };
-}
-
-// DPI of a monitor (Windows 8.1+ via shcore.dll), else system DPI.
-static UINT ForMonitor(HMONITOR hMon) {
-    using PFN_GetDpiForMonitor = HRESULT (WINAPI*)(HMONITOR, int, UINT*, UINT*);
-    static PFN_GetDpiForMonitor getDpiForMonitor = []() -> PFN_GetDpiForMonitor {
-        HMODULE shcore = LoadLibraryW(L"shcore.dll");  // kept loaded for the process lifetime
-        return shcore ? reinterpret_cast<PFN_GetDpiForMonitor>(reinterpret_cast<void*>(
-                            GetProcAddress(shcore, "GetDpiForMonitor")))
-                      : nullptr;
-    }();
-    UINT dpiX = 0, dpiY = 0;
-    if (getDpiForMonitor && hMon &&
-        SUCCEEDED(getDpiForMonitor(hMon, 0 /* MDT_EFFECTIVE_DPI */, &dpiX, &dpiY)) && dpiX) {
-        return dpiX;
-    }
-    return SystemDpi();
-}
-
-}  // namespace Dpi
-
-// ---------------------------------------------------------------------------
-// Keep a window rectangle inside its monitor's work area (R10)
-//
-// Shrinks the rectangle if it is larger than the work area (screen minus
-// taskbar and docked toolbars), then shifts it so that it lies completely
-// inside. The monitor is the one the rectangle overlaps most, or the nearest
-// one if it is on no monitor at all (e.g. a saved position on a monitor that
-// has since been disconnected).
-// ---------------------------------------------------------------------------
-static void ClampToWorkArea(RECT& rc, HMONITOR hMon) {
-    MONITORINFO mi = {};
-    mi.cbSize = sizeof(mi);
-    if (!hMon || !GetMonitorInfoW(hMon, &mi)) {
-        return;
-    }
-    const RECT& work = mi.rcWork;
-    const LONG workW = work.right - work.left;
-    const LONG workH = work.bottom - work.top;
-
-    LONG w = (std::min)(rc.right - rc.left, workW);
-    LONG h = (std::min)(rc.bottom - rc.top, workH);
-    LONG x = (std::max)(work.left, (std::min)(rc.left, work.right - w));
-    LONG y = (std::max)(work.top,  (std::min)(rc.top,  work.bottom - h));
-
-    rc = RECT{ x, y, x + w, y + h };
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,13 +759,15 @@ static int  g_sortCol = -1;      // last sorted column (-1 = none)
 static bool g_sortAsc = true;    // true = ascending, false = descending
 
 // Sort g_devices using the current sort state (g_sortCol / g_sortAsc) without
-// changing it. Does nothing if no column has been sorted yet. Called after a
-// column click and after every reload, so freshly loaded data keeps the order
-// the header arrow shows (B2). std::stable_sort keeps rows with equal keys in
-// file order, so repeated reloads never shuffle them.
+// changing it. With no sorted column, g_devices is put back in file order
+// (F8). Called after a column click and after every reload, so freshly
+// loaded data keeps the order the header arrow shows (B2). std::stable_sort
+// keeps rows with equal keys in file order, so reloads never shuffle them.
 static void ApplyCurrentSort() {
     const int col = g_sortCol;
     if (col < COL_HOST || col > COL_DESCRIPTION) {
+        std::stable_sort(g_devices.begin(), g_devices.end(),
+            [](const Device& a, const Device& b) { return a.fileIndex < b.fileIndex; });
         return;
     }
 
@@ -1102,26 +782,27 @@ static void ApplyCurrentSort() {
             case COL_DESCRIPTION: pa = &a.description; pb = &b.description; break;
             default:              return false;
             }
-            // B16: same case-insensitive rule as action-name matching
-            // (CompareStringOrdinal), so the order doesn't depend on locale.
-            // Returns CSTR_LESS_THAN (1), CSTR_EQUAL (2) or CSTR_GREATER_THAN (3).
-            const int cmp = CompareStringOrdinal(pa->c_str(), static_cast<int>(pa->size()),
-                                                 pb->c_str(), static_cast<int>(pb->size()),
-                                                 TRUE) - CSTR_EQUAL;
+            // B16: same case-insensitive rule as action-name matching, so the
+            // order doesn't depend on the locale.
+            const int cmp = CompareIgnoreCase(*pa, *pb);
             return ascending ? (cmp < 0) : (cmp > 0);
         });
 }
 
-// Column header click: same column flips direction, a new column starts
-// ascending. Then sorts g_devices with the new state.
+// Column header click: a new column sorts ascending, a second click on the
+// same column sorts descending, and a third goes back to file order (F8).
 static void ToggleSortColumn(int col) {
-    if (g_sortCol == col) {
-        g_sortAsc = !g_sortAsc;  // same column: flip direction
-    } else {
+    if (g_sortCol != col) {
         g_sortCol = col;
-        g_sortAsc = true;        // new column: always start ascending
+        g_sortAsc = true;        // new column: ascending
+    } else if (g_sortAsc) {
+        g_sortAsc = false;       // second click: descending
+    } else {
+        g_sortCol = -1;          // third click: file order
+        g_sortAsc = true;
     }
     ApplyCurrentSort();
+
 }
 
 // Update header arrows to reflect the current sort column and direction.
@@ -1193,13 +874,25 @@ static UINT_PTR GetRowDeviceId(HWND hLV, int row) {
     return ListView_GetItem(hLV, &lvi) ? static_cast<UINT_PTR>(lvi.lParam) : 0;
 }
 
+// Device most recently selected in the list (0 = none). Kept while the
+// selected group hides it, so it is selected again when it comes back into
+// view (B28).
+static UINT_PTR g_lastSelId = 0;
+
 // Refill the list from g_devices, keeping the selected device selected (B9),
 // identified by the ID in its row's lParam (B14). The row keeps keyboard
-// focus and is scrolled into view.
-static void PopulateListView(HWND hLV) {
+// focus and is scrolled into view. groupChanged: a different group was picked
+// in the tree; if no row is selected, the device remembered in g_lastSelId is
+// selected again when the new group contains it (B28).
+static void PopulateListView(HWND hLV, bool groupChanged = false) {
     // 1. Remember which device was selected.
     const int oldSel = ListView_GetNextItem(hLV, -1, LVNI_SELECTED);
-    const UINT_PTR selId = oldSel >= 0 ? GetRowDeviceId(hLV, oldSel) : 0;
+    UINT_PTR selId = oldSel >= 0 ? GetRowDeviceId(hLV, oldSel) : 0;
+    if (selId != 0) {
+        g_lastSelId = selId;
+    } else if (groupChanged) {
+        selId = g_lastSelId;
+    }
 
     // 2. Refill without repainting each row.
     SendMessageW(hLV, WM_SETREDRAW, FALSE, 0);
@@ -1271,6 +964,10 @@ static void RebuildGroupTree() {
         g_selGroup.reset();
         SendMessageW(g_hGroupTree, WM_SETREDRAW, TRUE, 0);
         g_buildingTree = false;
+        // B27: a hidden control can't keep the keyboard focus -- hand it
+        // (and the "restore focus here" bookmark) to the list.
+        if (g_hLastFocus == g_hGroupTree) g_hLastFocus = g_hListView;
+        if (GetFocus() == g_hGroupTree) SetFocus(g_hListView);
         ShowWindow(g_hGroupTree, SW_HIDE);
         if (wasShown) SendMessageW(GetParent(g_hGroupTree), WM_SIZE, 0, 0);
         return;
@@ -1318,7 +1015,7 @@ static void OnGroupTreeSelChanged(const NMTREEVIEWW* nm) {
     } else {
         g_selGroup.reset();
     }
-    PopulateListView(g_hListView);
+    PopulateListView(g_hListView, true);  // B28
 }
 
 // ---------------------------------------------------------------------------
@@ -1331,30 +1028,7 @@ static void OnGroupTreeSelChanged(const NMTREEVIEWW* nm) {
 // reloaded, so closing the error box re-activated the window, which reloaded,
 // failed and showed the box again in an endless loop.
 // ---------------------------------------------------------------------------
-struct FileStamp {
-    bool     exists = false;
-    FILETIME lastWrite{};
-    ULONGLONG size = 0;
-
-    bool operator==(const FileStamp& o) const {
-        if (exists != o.exists) return false;
-        if (!exists) return true;  // both missing
-        return size == o.size && CompareFileTime(&lastWrite, &o.lastWrite) == 0;
-    }
-    bool operator!=(const FileStamp& o) const { return !(*this == o); }
-};
-
-static FileStamp GetFileStamp(const std::wstring& path) {
-    FileStamp s;
-    WIN32_FILE_ATTRIBUTE_DATA fad{};
-    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
-        !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-        s.exists    = true;
-        s.lastWrite = fad.ftLastWriteTime;
-        s.size      = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
-    }
-    return s;
-}
+// (FileStamp and GetFileStamp are in DDCommon.h.)
 
 // B13: action names are matched ignoring case, so "RDP" and "rdp" are the
 // same action and only the first one is ever used. Report any such
@@ -1388,17 +1062,7 @@ static void WarnAboutDuplicateActions(HWND hWnd, const std::vector<Action>& acti
 // Quick-launch row: Action dropdown (F1)
 // ---------------------------------------------------------------------------
 
-// Full text of a window (edit box etc.).
-static std::wstring GetWindowTextString(HWND hWnd) {
-    const int len = GetWindowTextLengthW(hWnd);
-    if (len <= 0) {
-        return std::wstring();
-    }
-    std::wstring text(static_cast<size_t>(len) + 1, L'\0');
-    const int got = GetWindowTextW(hWnd, &text[0], len + 1);
-    text.resize(got > 0 ? static_cast<size_t>(got) : 0);
-    return text;
-}
+// (GetWindowTextString is in DDCommon.h.)
 
 // Name of the action currently chosen in the dropdown, or L"" if none.
 static std::wstring GetSelectedActionName() {
@@ -1433,19 +1097,16 @@ static void PopulateActionCombo() {
     }
     const std::wstring previous = GetSelectedActionName();
 
-    // Unique, non-blank names (first occurrence wins), in file order.
-    std::vector<std::wstring> names;
+    // Unique, non-blank names, A-Z (R20: same list as the "Unknown type"
+    // message). The default is the first named action in the file.
+    const std::vector<std::wstring> names = UniqueActionNames(g_actions);
+    std::wstring fileDefault;
     for (const Action& a : g_actions) {
-        if (!a.action.empty() && findAction(g_actions, a.action) == &a) {
-            names.push_back(a.action);
+        if (!Trim(a.action).empty()) {
+            fileDefault = a.action;
+            break;
         }
     }
-    const std::wstring fileDefault = names.empty() ? std::wstring() : names.front();
-
-    std::sort(names.begin(), names.end(), [](const std::wstring& x, const std::wstring& y) {
-        return CompareStringOrdinal(x.c_str(), static_cast<int>(x.size()),
-                                    y.c_str(), static_cast<int>(y.size()), TRUE) == CSTR_LESS_THAN;
-    });
 
     SendMessageW(g_hComboAction, CB_RESETCONTENT, 0, 0);
     int prevIndex = -1, defaultIndex = -1;
@@ -1478,8 +1139,8 @@ static bool      g_inReload   = false; // re-entrancy guard (see below)
 //                    immediately without touching the disk or the UI.
 //
 // Called at startup and whenever the window regains focus, so changes made
-// via the "Edit connections" / "Edit actions" buttons (in Notepad, a separate
-// process) show up without a restart.
+// with the "Edit Connections" / "Edit Actions" buttons (in the DDLaunch+
+// Editor or Notepad, separate processes) show up without a restart.
 static void ReloadAllData(HWND hWnd, bool force) {
     // MessageBox runs a modal loop that can deliver WM_ACTIVATE to this
     // window while a reload is still in progress; ignore those nested calls.
@@ -1535,9 +1196,18 @@ static void ReloadAllData(HWND hWnd, bool force) {
 
     if (reloadActions) {
         try {
-            g_actions = loadActions(actionsPath);
-            PopulateActionCombo();                       // F1
-            WarnAboutDuplicateActions(hWnd, g_actions);  // B13
+            std::wstring skipped;
+            g_actions = loadActions(actionsPath, skipped);  // B20
+            PopulateActionCombo();                          // F1
+            if (!skipped.empty()) {
+                MessageBoxW(hWnd,
+                    (L"actionDefinitions.json: these entries were skipped:" + skipped +
+                     L"\n\nEach action must be an object such as\n"
+                     L"{ \"action\": \"RDP\", \"args\": \" /v:\", \"command\": \"C:\\\\Windows\\\\System32\\\\mstsc.exe\" }\n"
+                     L"The other actions were loaded.").c_str(),
+                    L"DDLaunch+ - Actions skipped", MB_ICONWARNING | MB_OK);
+            }
+            WarnAboutDuplicateActions(hWnd, g_actions);     // B13
         } catch (const std::exception& e) {
             // actionDefinitions.json is missing or not valid JSON (e.g.
             // mid-edit). Keep whatever actions we already had rather than
@@ -1563,7 +1233,7 @@ static void ReloadAllData(HWND hWnd, bool force) {
 static bool LaunchWithAction(HWND hWnd, const Action& action, const std::wstring& host,
                              const std::wstring& what) {
     const std::wstring name = ToUpper(action.action);
-    if (action.command.empty()) {
+    if (Trim(action.command).empty()) {  // same test as the Editor's preview
         MessageBoxW(hWnd,
             (L"The \"" + name + L"\" action in actionDefinitions.json has an empty \"command\".").c_str(),
             L"DDLaunch+ - No command", MB_ICONWARNING | MB_OK);
@@ -1604,10 +1274,11 @@ static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& act
         std::wstring msg = L"No action is defined for type \"" + dev.type + L"\" (host \"" + hostLabel + L"\").\n\n";
         msg += L"Add an entry with \"action\": \"" + type + L"\" to actionDefinitions.json, "
                L"or change this connection's type in connections.json.";
-        if (!actions.empty()) {
+        const std::vector<std::wstring> names = UniqueActionNames(actions);  // R20
+        if (!names.empty()) {
             msg += L"\n\nDefined actions:";
-            for (const Action& a : actions) {
-                msg += L" " + a.action;
+            for (size_t i = 0; i < names.size(); ++i) {
+                msg += (i ? L", " : L" ") + names[i];
             }
         }
         MessageBoxW(hWnd, msg.c_str(), L"DDLaunch+ - Unknown type", MB_ICONWARNING | MB_OK);
@@ -1621,11 +1292,7 @@ static void OnItemActivated(HWND hWnd, int index, const std::vector<Action>& act
 // the Host box. Leading/trailing spaces are trimmed; spaces inside the host
 // are handled by the normal quoting/URL rules.
 static void OnGo(HWND hWnd) {
-    std::wstring host = GetWindowTextString(g_hHostBox);
-    const size_t first = host.find_first_not_of(L" \t\r\n");
-    host = (first == std::wstring::npos)
-               ? std::wstring()
-               : host.substr(first, host.find_last_not_of(L" \t\r\n") - first + 1);
+    const std::wstring host = Trim(GetWindowTextString(g_hHostBox));
 
     if (host.empty()) {
         MessageBoxW(hWnd,
@@ -1641,7 +1308,7 @@ static void OnGo(HWND hWnd) {
         MessageBoxW(hWnd,
             L"No action is selected.\n\n"
             L"The Action list is filled from actionDefinitions.json. Click "
-            L"\"Edit actionDefinitions.json\" to add actions.",
+            L"\"Edit Actions\" to add actions.",
             L"DDLaunch+ - No action", MB_ICONWARNING | MB_OK);
         SetFocus(g_hComboAction);
         return;
@@ -1662,7 +1329,7 @@ const int BTN_MIN_W   = 250;  // minimum button width
 const int BTN_PAD_X   = 24;   // horizontal padding added to measured text
 const int GAP         = 10;   // gap between buttons in a row
 const int MARGIN      = 6;    // margin around the button area
-const int ROW_GAP     = 6;    // gap between the two button rows
+const int ROW_GAP     = 6;    // gap between the quick-launch row and the two button rows
 const int MIN_LIST_H  = 80;   // smallest list height allowed by resizing
 const int COL_W[3]    = { 200, 100, 300 };  // initial column widths
 const int WINDOW_W    = 780;  // initial window size (wide enough for the group tree, F7)
@@ -1681,8 +1348,10 @@ static int S(int designValue) { return Dpi::Scale(designValue, g_dpi); }
 // settings.json lives next to the other config files:
 //   { "window": { "x": 120, "y": 80, "width": 640, "height": 420,
 //                 "maximized": false },
-//     "hostHistory": [ { "host": "dc01.ynext.corp", "action": "RDP" }, ... ] }
-// ("hostHistory" is the Host box history, F4 -- see below.)
+//     "hostHistory": [ { "host": "dc01.ynext.corp", "action": "RDP" }, ... ],
+//     "treeWidth": 190, "group": "PCs" }
+// ("hostHistory" is the Host box history, F4; "treeWidth" and "group" are
+// the group tree's width in 96-DPI units and selected group, F7.)
 // x / y are screen coordinates in physical pixels (top-left of the restored
 // window). width / height are in 96-DPI units so the window keeps the same
 // apparent size when it reopens on a monitor with different scaling. The
@@ -1698,13 +1367,27 @@ static std::wstring GetSettingsJsonPath() {
     return GetDataDir() + L"\\settings.json";
 }
 
-static std::optional<WindowSettings> LoadWindowSettings() {
+// R18: settings.json is read and parsed once at startup; the three loaders
+// below take the result. A missing or corrupt file gives a null json value,
+// which every loader treats as "no saved settings" -- never an error box.
+static json LoadSettingsFile() {
     try {
         const std::wstring path = GetSettingsJsonPath();
-        if (!FileExists(path)) {
+        if (FileExists(path)) {
+            json j = json::parse(ReadFileUtf8(path));
+            if (j.is_object()) return j;
+        }
+    } catch (const std::exception&) {
+        // corrupt or hand-edited badly: use the defaults
+    }
+    return json();
+}
+
+static std::optional<WindowSettings> LoadWindowSettings(const json& j) {
+    try {
+        if (!j.is_object() || !j.contains("window")) {
             return std::nullopt;
         }
-        const json j = json::parse(ReadFileUtf8(path));
         const json& w = j.at("window");
         WindowSettings ws;
         ws.x         = w.at("x").get<int>();
@@ -1738,11 +1421,9 @@ static std::vector<HostHistoryEntry> g_hostHistory;
 
 // F7: group tree width ("treeWidth", 96-DPI units) and the selected group
 // ("group"; absent = all) from settings.json. Bad values are ignored.
-static void LoadTreeSettings() {
+static void LoadTreeSettings(const json& j) {
     try {
-        const std::wstring path = GetSettingsJsonPath();
-        if (!FileExists(path)) return;
-        const json j = json::parse(ReadFileUtf8(path));
+        if (!j.is_object()) return;
         if (j.contains("treeWidth") && j["treeWidth"].is_number_integer()) {
             const int w = j["treeWidth"].get<int>();
             if (w >= 80 && w <= 2000) g_treeW96 = w;
@@ -1757,14 +1438,12 @@ static void LoadTreeSettings() {
 
 // Read "hostHistory" from settings.json. Bad entries are skipped and a
 // missing or corrupt file just means no history -- never an error box.
-static void LoadHostHistory() {
+static void LoadHostHistory(const json& j) {
     g_hostHistory.clear();
     try {
-        const std::wstring path = GetSettingsJsonPath();
-        if (!FileExists(path)) {
+        if (!j.is_object()) {
             return;
         }
-        const json j = json::parse(ReadFileUtf8(path));
         const auto it = j.find("hostHistory");
         if (it == j.end() || !it->is_array()) {
             return;
@@ -2003,8 +1682,8 @@ static void ApplyDpi(HWND hWnd) {
 }
 
 // Single-line text label, vertically centered in its rectangle. A '&' in
-// the text underlines the next letter; Alt+that letter (handled by
-// IsDialogMessageW) moves focus to the control created right after it.
+// the text underlines the next letter; Alt+that letter moves focus to the
+// matching control (handled by HandleQuickLaunchMnemonic in the message loop).
 static HWND CreateLabel(HWND hWnd, const wchar_t* text, int id, DWORD align) {
     return CreateWindowExW(
         0, L"STATIC", text,
@@ -2082,7 +1761,7 @@ static void ShowAboutBox(HWND hWnd) {
         L"Version:  " + std::wstring(VERSION).substr(1) + L"\n\n"
         L"Editor:  " + (editorFound ? L"DDLaunchEdit.exe (Edit buttons open it)"
                                     : L"not installed (Edit buttons open Notepad)") + L"\n\n"
-        L"Win32 C++ · nlohmann/json " + jsonVer;
+        L"Win32 C++ \u00B7 nlohmann/json " + jsonVer;  // B29: middle dot
 
     MSGBOXPARAMSW mbp = {};
     mbp.cbSize = sizeof(mbp);
@@ -2113,7 +1792,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
             0, 0, 0, 0,
-            hWnd, (HMENU)IDC_LISTVIEW, GetModuleHandleW(nullptr), nullptr);
+            hWnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_LISTVIEW)), GetModuleHandleW(nullptr), nullptr);
 
         ListView_SetExtendedListViewStyle(g_hListView,
             LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
@@ -2138,9 +1817,10 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         // Tab order: quick-launch row, then the two button rows, each
         // left-to-right. Each label is created just before its control so
         // its Alt+letter mnemonic focuses that control.
-        //   Host: [ host box          ] Action: [ dropdown ] [ Go ]
-        //   [ Edit actionDefinitions.json ] [ Launch RDP ... ]
-        //   [ Edit connections.json ]       [ Run... ] [ Exit ]
+        //   Host: [ host box   ] Action: [ dropdown ] [ Go ]
+        //   [ Edit Actions     ]         [ Launch RDP ... ]
+        //   [ Edit Connections ]         [ Run... ] [ Exit ]
+        //   About
         g_hLblHost  =CreateLabel(hWnd, L"&Host:", IDC_LBL_HOST, SS_LEFT);
         // F4: an editable dropdown (CBS_DROPDOWN) -- type a host, or open
         // the list for the history of hosts launched with Go.
@@ -2247,11 +1927,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             MoveWindow(g_hBtnGo, rightX + halfW + gap, row0Y, halfW, btnH, TRUE);
         }
 
-        // Middle row: Edit actionDefinitions.json | Launch RDP (F2)
+        // Middle row: Edit Actions | Launch RDP (F2)
         MoveWindow(g_hBtnEditActions, startX, row1Y, btnW, btnH, TRUE);
         MoveWindow(g_hBtnRDP,         rightX, row1Y, btnW, btnH, TRUE);
 
-        // Bottom row: Edit connections.json | Run... | Exit
+        // Bottom row: Edit Connections | Run... | Exit
         MoveWindow(g_hBtnEditConn, startX,               row2Y, btnW,  btnH, TRUE);
         MoveWindow(g_hBtnRun,      rightX,               row2Y, halfW, btnH, TRUE);
         MoveWindow(g_hBtnExit,     rightX + halfW + gap, row2Y, halfW, btnH, TRUE);
@@ -2301,7 +1981,13 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
     case WM_LBUTTONDOWN: {
         const int x = static_cast<short>(LOWORD(lParam));
-        if (g_treePx > 0 && x >= g_treePx && x < g_treePx + S(Layout::SPLIT_W)) {
+        const int y = static_cast<short>(HIWORD(lParam));
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        // B26: only the bar beside the list, not the strip below it by the
+        // buttons (the same area WM_SETCURSOR shows the resize cursor for).
+        if (g_treePx > 0 && x >= g_treePx && x < g_treePx + S(Layout::SPLIT_W) &&
+            y < rc.bottom - ButtonAreaHeight()) {
             g_splitDrag = true;
             SetCapture(hWnd);
         }
@@ -2630,7 +2316,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
         WS_EX_CONTROLPARENT,
         kWindowClass,
         windowTitle.c_str(),
-        WS_OVERLAPPEDWINDOW,
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,  // R17: children aren't painted over
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         Layout::WINDOW_W,
@@ -2651,7 +2337,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     //  - otherwise: where Windows put it (CW_USEDEFAULT), at the default
     //    size scaled for that monitor.
     // Either way the rectangle is then clamped to that monitor's work area.
-    const std::optional<WindowSettings> saved = LoadWindowSettings();
+    const json settings = LoadSettingsFile();  // R18: read once
+    const std::optional<WindowSettings> saved = LoadWindowSettings(settings);
     RECT target;
     HMONITOR hMon;
     if (saved) {
@@ -2689,10 +2376,10 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int nCmdShow) {
     GetWindowRect(hWnd, &g_normalRect);
 
     // F4: Host box history from settings.json.
-    LoadHostHistory();
+    LoadHostHistory(settings);
     RefreshHostHistoryCombo();
     // F7: group tree width and the group that was selected last time.
-    LoadTreeSettings();
+    LoadTreeSettings(settings);
     g_normalRectDpi = g_dpi;
 
     // Reopen maximized if it was closed maximized, unless the shortcut asked

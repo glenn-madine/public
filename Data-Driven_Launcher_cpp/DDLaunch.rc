@@ -1,4 +1,4 @@
-// DDLaunch.rc -- resources for DDLaunch+ v2.7.0
+// DDLaunch.rc -- resources for DDLaunch+ (version from version.h, R16)
 //
 // Build:  rc /nologo DDLaunch.rc      (produces DDLaunch.res)
 // Then link DDLaunch.res with /MANIFEST:NO (see DDLaunch.cpp header).
@@ -8,10 +8,11 @@
 
 #include <windows.h>
 #include "resource.h"
+#include "version.h"   // DDLAUNCH_VERSION_*, DDLAUNCH_AUTHOR
 
 // ---------------------------------------------------------------------------
-// Icon (IDI_ICON1 is defined in resource.h). Adjust the file name if your
-// icon file is called something else.
+// Icon (IDI_ICON1 is defined in resource.h). DDLaunch.ico holds 16 to 256 px
+// 32-bit images, so Windows picks a sharp one at every DPI (R22).
 // ---------------------------------------------------------------------------
 IDI_ICON1 ICON "DDLaunch.ico"
 
@@ -25,8 +26,8 @@ CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "DDLaunch.manifest"
 // Version information (shown in File Explorer > Properties > Details)
 // ---------------------------------------------------------------------------
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION     2,7,0,0
- PRODUCTVERSION  2,7,0,0
+ FILEVERSION     DDLAUNCH_VERSION_RC
+ PRODUCTVERSION  DDLAUNCH_VERSION_RC
  FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
  FILEFLAGS       0x0L
  FILEOS          VOS_NT_WINDOWS32
@@ -37,13 +38,13 @@ BEGIN
     BEGIN
         BLOCK "040904B0"
         BEGIN
-            VALUE "CompanyName",      "Glenn Madine"
+            VALUE "CompanyName",      DDLAUNCH_AUTHOR
             VALUE "FileDescription",  "DDLaunch+ Data-Driven Launcher"
-            VALUE "FileVersion",      "2.7.0.0"
+            VALUE "FileVersion",      DDLAUNCH_VERSION_STR
             VALUE "InternalName",     "DDLaunch"
             VALUE "OriginalFilename", "DDLaunch.exe"
             VALUE "ProductName",      "DDLaunch+"
-            VALUE "ProductVersion",   "2.7.0.0"
+            VALUE "ProductVersion",   DDLAUNCH_VERSION_STR
         END
     END
     BLOCK "VarFileInfo"

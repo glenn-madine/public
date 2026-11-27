@@ -1,7 +1,33 @@
-// DDLaunch+ Editor version 1.0.1
+// DDLaunch+ Editor version 1.0.2
 // C++ (Win32 API)
 // Author: Glenn Madine
-// Release_Date: 11/14/2026
+// Release_Date: 11/26/2026
+// Changes in 1.0.2:
+//   - Code shared with DDLaunch+ (text, file, URL/quoting, launch and DPI
+//     helpers) is now in DDCommon.h. The "Launches:" line is built by the
+//     same BuildLaunch() DDLaunch+ launches with, so it can no longer drift
+//     from what DDLaunch+ really runs -- including the host not being
+//     trimmed before (it now is in both), environment variables such as
+//     %OneDrive% (expanded in both) and full-URL hosts for InPrivate/SFTP.
+//   - Version, release date and author come from version.h, shared with
+//     DDLaunchEdit.rc.
+//   - Groups are matched ignoring upper/lower case when saving, as the Group
+//     dropdown already did: "Servers" and "servers" are saved as one group,
+//     under the spelling that appears first.
+//   - In a file of named groups, Move Up / Move Down move an entry within its
+//     group (entries are saved gathered by group, so a move across a group
+//     boundary used to be undone on save). The buttons are disabled at the
+//     first / last entry of the group.
+//   - Saving no longer reorders the list or fills in "Ungrouped" unless the
+//     file was actually written.
+//   - Renaming an action: the "update the connections that use it?"
+//     question waits until focus moves to another control of the editor, so
+//     it no longer appears on top of another message box; a rename is also
+//     completed before Save, Add and Duplicate.
+//   - Browse... accepts paths longer than MAX_PATH; an unused variable was
+//     removed.
+//   - About box: the "\u00B7" is written as an escape and the source is
+//     compiled with /utf-8, so it no longer shows as "Â·".
 // Changes in 1.0.1:
 //   - "About" link at the left end of the status line. Clicking it, or
 //     pressing Enter on it, opens an About box with the version, author,
@@ -45,11 +71,11 @@
 //            Ctrl+Tab / Ctrl+Shift+Tab switch tabs   Enter (in list) edit
 //
 // Requires: Windows SDK, nlohmann/json (single-header, included as json.hpp)
-// Build files: DDLaunchEdit.cpp, DDLaunchEdit.rc, DDLaunchEdit.manifest,
-//              resource.h, DDLaunch.ico, json.hpp
-// Compile and link command lines:
+// Build files: DDLaunchEdit.cpp, DDCommon.h, version.h, DDLaunchEdit.rc,
+//              DDLaunchEdit.manifest, resource.h, DDLaunch.ico, json.hpp
+// Compile and link command lines (Compile.cmd builds both programs):
 //     rc /nologo DDLaunchEdit.rc
-//     CL /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 DDLaunchEdit.cpp DDLaunchEdit.res /Fe:DDLaunchEdit.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:NO comctl32.lib comdlg32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib
+//     CL /nologo /utf-8 /EHsc /W3 /O2 /GL /DUNICODE /D_UNICODE /DNDEBUG /std:c++17 DDLaunchEdit.cpp DDLaunchEdit.res /Fe:DDLaunchEdit.exe /link /SUBSYSTEM:WINDOWS /MANIFEST:NO comctl32.lib comdlg32.lib shell32.lib shlwapi.lib user32.lib gdi32.lib ole32.lib
 // The manifest comes only from DDLaunchEdit.rc; /MANIFEST:NO stops the
 // linker adding a second one (Linker > Manifest File > Generate Manifest = No).
 // Put DDLaunchEdit.exe in the same folder as DDLaunch.exe so DDLaunch+'s Edit
@@ -77,6 +103,8 @@
 #include <cstdint>
 #include "json.hpp"
 #include "resource.h"
+#include "version.h"   // version, release date, author
+#include "DDCommon.h"  // helpers shared with DDLaunch+
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "comctl32.lib")
@@ -89,11 +117,11 @@
 // looks like the one that was loaded (nlohmann::json would sort them).
 using ojson = nlohmann::ordered_json;
 
-#define APP_NAME     L"DDLaunch+ Editor"
-#define APP_VERSION  L"v1.0.1"
-// Shown in the About box. Keep in step with the header and DDLaunchEdit.rc.
-#define APP_AUTHOR        L"Glenn Madine"
-#define APP_RELEASE_DATE  L"11/14/2026"
+#define APP_NAME          L"DDLaunch+ Editor"
+// Shown in the title and About box; defined once in version.h.
+#define APP_VERSION       L"v" DDLAUNCHEDIT_VERSION_SHORT
+#define APP_AUTHOR        L"" DDLAUNCH_AUTHOR
+#define APP_RELEASE_DATE  L"" DDLAUNCHEDIT_RELEASE_DATE
 
 // ---------------------------------------------------------------------------
 // Control IDs
@@ -123,43 +151,9 @@ enum { TAB_CONN = 0, TAB_ACT = 1 };
 #define WM_APP_SHOWERRORS  (WM_APP + 2)   // report load errors once the window is visible
 
 // ---------------------------------------------------------------------------
-// Text helpers
+// Text helpers (Utf8ToWide, EqualsIgnoreCase, Trim, GetErrorText ... are in
+// DDCommon.h)
 // ---------------------------------------------------------------------------
-static std::wstring Utf8ToWide(const std::string& utf8) {
-    if (utf8.empty()) return std::wstring();
-    int n = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
-    if (n <= 0) throw std::runtime_error("UTF-8 to UTF-16 conversion failed");
-    std::wstring w(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), &w[0], n);
-    return w;
-}
-
-static std::string WideToUtf8(const std::wstring& wide) {
-    if (wide.empty()) return std::string();
-    int n = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0,
-                                nullptr, nullptr);
-    if (n <= 0) throw std::runtime_error("UTF-16 to UTF-8 conversion failed");
-    std::string s(static_cast<size_t>(n), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), &s[0], n, nullptr, nullptr);
-    return s;
-}
-
-// Text of a std::exception (UTF-8, from this file or nlohmann::json). Never throws.
-static std::wstring ExceptionText(const std::exception& e) {
-    try { return Utf8ToWide(e.what()); } catch (...) { return L"(error text could not be converted)"; }
-}
-
-// Same case rule as DDLaunch+: ordinal, ignoring case, independent of locale.
-static bool EqualsIgnoreCase(const std::wstring& a, const std::wstring& b) {
-    return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()),
-                                b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
-}
-
-static bool LessIgnoreCase(const std::wstring& a, const std::wstring& b) {
-    return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()),
-                                b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_LESS_THAN;
-}
-
 static std::wstring ToUpper(std::wstring s) {
     for (auto& c : s) c = static_cast<wchar_t>(towupper(c));
     return s;
@@ -169,131 +163,15 @@ static bool ContainsIgnoreCase(const std::wstring& haystack, const std::wstring&
     return needleUpper.empty() || ToUpper(haystack).find(needleUpper) != std::wstring::npos;
 }
 
-static std::wstring Trim(const std::wstring& s) {
-    const size_t a = s.find_first_not_of(L" \t\r\n");
-    if (a == std::wstring::npos) return std::wstring();
-    return s.substr(a, s.find_last_not_of(L" \t\r\n") - a + 1);
-}
-
-static std::wstring GetText(HWND h) {
-    const int len = GetWindowTextLengthW(h);
-    if (len <= 0) return std::wstring();
-    std::wstring t(static_cast<size_t>(len) + 1, L'\0');
-    const int got = GetWindowTextW(h, &t[0], len + 1);
-    t.resize(got > 0 ? static_cast<size_t>(got) : 0);
-    return t;
-}
-
-static std::wstring GetErrorText(DWORD err) {
-    LPWSTR buf = nullptr;
-    DWORD len = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-                               FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, err, 0,
-                               reinterpret_cast<LPWSTR>(&buf), 0, nullptr);
-    std::wstring text = (len && buf) ? std::wstring(buf, len) : std::wstring(L"Unknown error.");
-    if (buf) LocalFree(buf);
-    while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n' || text.back() == L' ')) {
-        text.pop_back();
-    }
-    return text;
-}
+static std::wstring GetText(HWND h) { return GetWindowTextString(h); }
 
 // ---------------------------------------------------------------------------
-// Files and folders (same locations and rules as DDLaunch+)
+// Files and folders (same locations and rules as DDLaunch+; ReadFileUtf8,
+// FileExists, GetDataDir and FileStamp are in DDCommon.h)
 // ---------------------------------------------------------------------------
-static std::string ReadFileUtf8(const std::wstring& path) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ,
-                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-        throw std::runtime_error("Could not open file: " + WideToUtf8(path));
-    }
-    LARGE_INTEGER size{};
-    if (!GetFileSizeEx(h, &size)) {
-        CloseHandle(h);
-        throw std::runtime_error("Could not get file size: " + WideToUtf8(path));
-    }
-    std::string buf(static_cast<size_t>(size.QuadPart), '\0');
-    DWORD read = 0;
-    BOOL ok = ReadFile(h, buf.empty() ? nullptr : &buf[0], static_cast<DWORD>(buf.size()), &read, nullptr);
-    CloseHandle(h);
-    if (!ok || read != buf.size()) {
-        throw std::runtime_error("Failed reading file: " + WideToUtf8(path));
-    }
-    return buf;
-}
-
-static bool FileExists(const std::wstring& p) {
-    DWORD a = GetFileAttributesW(p.c_str());
-    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-static bool DirectoryExists(const std::wstring& p) {
-    DWORD a = GetFileAttributesW(p.c_str());
-    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-static std::wstring GetExeDir() {
-    wchar_t buf[MAX_PATH] = {};
-    GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    PathRemoveFileSpecW(buf);
-    return buf;
-}
-
-static std::wstring GetUserProfileDir() {
-    DWORD needed = GetEnvironmentVariableW(L"USERPROFILE", nullptr, 0);
-    if (needed > 0) {
-        std::wstring buf(needed, L'\0');
-        DWORD len = GetEnvironmentVariableW(L"USERPROFILE", &buf[0], needed);
-        if (len > 0 && len < needed) {
-            buf.resize(len);
-            return buf;
-        }
-    }
-    PWSTR known = nullptr;
-    std::wstring result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Profile, 0, nullptr, &known)) && known) {
-        result = known;
-    }
-    CoTaskMemFree(known);
-    return result;
-}
-
-// %USERPROFILE%\DDLaunch, or the .exe folder if the profile can't be found.
-static std::wstring GetDataDir() {
-    std::wstring profile = GetUserProfileDir();
-    if (profile.empty()) return GetExeDir();
-    if (profile.back() == L'\\' || profile.back() == L'/') profile.pop_back();
-    return profile + L"\\DDLaunch";
-}
-
 static std::wstring ConnectionsPath() { return GetDataDir() + L"\\connections.json"; }
 static std::wstring ActionsPath()     { return GetDataDir() + L"\\actionDefinitions.json"; }
 static std::wstring EditorSettingsPath() { return GetDataDir() + L"\\editor.json"; }
-
-// Last-write time and size, to notice changes made outside the editor.
-struct FileStamp {
-    bool exists = false;
-    FILETIME lastWrite{};
-    ULONGLONG size = 0;
-    bool operator==(const FileStamp& o) const {
-        if (exists != o.exists) return false;
-        if (!exists) return true;
-        return size == o.size && CompareFileTime(&lastWrite, &o.lastWrite) == 0;
-    }
-    bool operator!=(const FileStamp& o) const { return !(*this == o); }
-};
-
-static FileStamp GetFileStamp(const std::wstring& path) {
-    FileStamp s;
-    WIN32_FILE_ATTRIBUTE_DATA fad{};
-    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fad) &&
-        !(fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-        s.exists = true;
-        s.lastWrite = fad.ftLastWriteTime;
-        s.size = (static_cast<ULONGLONG>(fad.nFileSizeHigh) << 32) | fad.nFileSizeLow;
-    }
-    return s;
-}
 
 // Write `utf8` to `path` safely: the current file (if any) is copied to
 // <path>.bak, the new text goes to <path>.tmp, which then replaces <path>.
@@ -329,78 +207,19 @@ static std::wstring WriteFileSafely(const std::wstring& path, const std::string&
 }
 
 // ---------------------------------------------------------------------------
-// Launch preview -- the same rules DDLaunch+ 2.3.1+ uses to build what it
-// passes to ShellExecuteExW (StartsWithUrlScheme, HostIsFullUrl,
-// EncodeUrlUnsafeChars, QuoteArgIfNeeded). Keep these in step with
-// DDLaunch.cpp if those rules ever change.
+// Launch preview
 // ---------------------------------------------------------------------------
-static bool IsAsciiAlpha(wchar_t c) { return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z'); }
-static bool IsAsciiDigit(wchar_t c) { return c >= L'0' && c <= L'9'; }
-
-static bool StartsWithUrlScheme(const std::wstring& text) {
-    const size_t colon = text.find(L':');
-    if (colon == std::wstring::npos || colon < 2 || !IsAsciiAlpha(text[0])) return false;
-    for (size_t i = 1; i < colon; ++i) {
-        const wchar_t c = text[i];
-        if (!IsAsciiAlpha(c) && !IsAsciiDigit(c) && c != L'+' && c != L'-' && c != L'.') return false;
-    }
-    return true;
-}
-
-static std::wstring UrlScheme(const std::wstring& text) {
-    return StartsWithUrlScheme(text) ? text.substr(0, text.find(L':')) : std::wstring();
-}
-
-static bool HostIsFullUrl(const std::wstring& host, const std::wstring& command) {
-    const std::wstring scheme = UrlScheme(host);
-    if (scheme.empty()) return false;
-    if (host.compare(scheme.size(), 3, L"://") == 0) return true;
-    const std::wstring cmdScheme = UrlScheme(command);
-    return !cmdScheme.empty() && EqualsIgnoreCase(scheme, cmdScheme);
-}
-
-static std::wstring EncodeUrlUnsafeChars(const std::wstring& text) {
-    static const wchar_t kHex[] = L"0123456789ABCDEF";
-    std::wstring out;
-    for (wchar_t c : text) {
-        if (c <= 0x20 || c == 0x7F || wcschr(L"\"<>^`{|}", c) != nullptr) {
-            out += L'%';
-            out += kHex[(c >> 4) & 0xF];
-            out += kHex[c & 0xF];
-        } else {
-            out += c;
-        }
-    }
-    return out;
-}
-
-static std::wstring QuoteArgIfNeeded(const std::wstring& arg) {
-    if (arg.empty() || arg.find_first_of(L" \t\"") == std::wstring::npos) return arg;
-    std::wstring out = L"\"";
-    size_t backslashes = 0;
-    for (wchar_t c : arg) {
-        if (c == L'\\') { ++backslashes; continue; }
-        if (c == L'"') out.append(backslashes * 2 + 1, L'\\');
-        else           out.append(backslashes, L'\\');
-        out += c;
-        backslashes = 0;
-    }
-    out.append(backslashes * 2, L'\\');
-    out += L'"';
-    return out;
-}
 
 // One line describing what DDLaunch+ will launch for this command/args/host
-// (shown after the "Launches:" label).
+// (shown after the "Launches:" label). Built by BuildLaunch() in DDCommon.h
+// -- the same code DDLaunch+ launches with -- so it always matches.
 static std::wstring DescribeLaunch(const std::wstring& command, const std::wstring& args,
                                    const std::wstring& host) {
-    if (command.empty()) return L"Nothing - this action has no command.";
-    if (StartsWithUrlScheme(command)) {
-        return EncodeUrlUnsafeChars(HostIsFullUrl(host, command) ? host : command + host) +
-               L"   (opened with the app registered for it)";
-    }
-    const std::wstring shownCmd = command.find(L' ') != std::wstring::npos ? L"\"" + command + L"\"" : command;
-    const std::wstring params = Trim(args + QuoteArgIfNeeded(host));
+    if (Trim(command).empty()) return L"Nothing - this action has no command.";
+    const LaunchSpec spec = BuildLaunch(command, args, host);
+    if (spec.isUrl) return spec.file + L"   (opened with the app registered for it)";
+    const std::wstring shownCmd = spec.file.find(L' ') != std::wstring::npos ? L"\"" + spec.file + L"\"" : spec.file;
+    const std::wstring params = Trim(spec.params);
     return shownCmd + (params.empty() ? L"" : L"  " + params);
 }
 
@@ -584,39 +403,71 @@ static bool ConnsUseGroups() {
     return std::any_of(g_conns.begin(), g_conns.end(), [](const ConnEntry& c) { return !Trim(c.group).empty(); });
 }
 
-// Build connections.json. With groups, entries are gathered by group (in
-// order of first appearance) and g_conns is reordered to match the file.
-static std::string BuildConnectionsText() {
+// The group an entry is saved under: trimmed, and "Ungrouped" if blank.
+static std::wstring GroupKey(const std::wstring& group) {
+    const std::wstring g = Trim(group);
+    return g.empty() ? std::wstring(kUngrouped) : g;
+}
+
+// Build connections.json from g_conns. `saved` receives the entries as they
+// are written; the caller copies it to g_conns only once the file has been
+// saved, so a failed save changes nothing.
+// With groups, entries are gathered by group, in order of first appearance.
+// Group names are matched ignoring upper/lower case -- as the Group dropdown
+// and DDLaunch+'s action names are -- so "Servers" and "servers" are one
+// group, saved under the spelling that appears first.
+static std::string BuildConnectionsText(std::vector<ConnEntry>& saved) {
+    saved = g_conns;
     if (!ConnsUseGroups()) {
         ojson arr = ojson::array();
-        for (const ConnEntry& e : g_conns) arr.push_back(ConnToJson(e));
+        for (const ConnEntry& e : saved) arr.push_back(ConnToJson(e));
         return arr.dump(4) + "\n";
     }
 
-    for (ConnEntry& e : g_conns) {
-        e.group = Trim(e.group);
-        if (e.group.empty()) e.group = kUngrouped;
-    }
-    std::vector<std::wstring> order;
-    for (const ConnEntry& e : g_conns) {
-        if (std::none_of(order.begin(), order.end(), [&](const std::wstring& g) { return g == e.group; })) {
-            order.push_back(e.group);
+    std::vector<std::wstring> order;  // group names, first spelling, in order
+    for (ConnEntry& e : saved) {
+        const std::wstring g = GroupKey(e.group);
+        const auto it = std::find_if(order.begin(), order.end(),
+                                     [&](const std::wstring& x) { return EqualsIgnoreCase(x, g); });
+        if (it == order.end()) {
+            order.push_back(g);
+            e.group = g;
+        } else {
+            e.group = *it;
         }
     }
-    std::vector<ConnEntry> sorted;
+    std::vector<ConnEntry> gathered;
+    gathered.reserve(saved.size());
     ojson root = ojson::object();
     for (const std::wstring& g : order) {
         ojson arr = ojson::array();
-        for (const ConnEntry& e : g_conns) {
+        for (const ConnEntry& e : saved) {
             if (e.group == g) {
                 arr.push_back(ConnToJson(e));
-                sorted.push_back(e);
+                gathered.push_back(e);
             }
         }
         root[WideToUtf8(g)] = std::move(arr);
     }
-    g_conns = std::move(sorted);
+    saved = std::move(gathered);
     return root.dump(4) + "\n";
+}
+
+// Index of the entry that Move Up (delta -1) / Move Down (+1) swaps the entry
+// at `i` with, or -1 if it can't move that way. In a file of named groups
+// entries are saved gathered by group, so a move stays inside the entry's
+// group: it swaps with the nearest entry of the same group.
+static size_t ConnMoveTarget(size_t i, int delta) {
+    const size_t none = static_cast<size_t>(-1);
+    if (i >= g_conns.size()) return none;
+    const bool grouped = ConnsUseGroups();
+    const std::wstring group = GroupKey(g_conns[i].group);
+    for (ptrdiff_t j = static_cast<ptrdiff_t>(i) + delta; j >= 0 && j < static_cast<ptrdiff_t>(g_conns.size()); j += delta) {
+        if (!grouped || EqualsIgnoreCase(GroupKey(g_conns[static_cast<size_t>(j)].group), group)) {
+            return static_cast<size_t>(j);
+        }
+    }
+    return none;
 }
 
 static std::string BuildActionsText() {
@@ -625,85 +476,7 @@ static std::string BuildActionsText() {
     return arr.dump(4) + "\n";
 }
 
-// ---------------------------------------------------------------------------
-// DPI helpers (as in DDLaunch+)
-// ---------------------------------------------------------------------------
-namespace Dpi {
-const UINT kBase = USER_DEFAULT_SCREEN_DPI;
-
-template <typename Fn>
-static Fn LoadUser32(const char* name) {
-    return reinterpret_cast<Fn>(reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"user32.dll"), name)));
-}
-
-static void EnableDpiAwareness() {
-    if (IsProcessDPIAware()) return;  // the manifest already set it
-    using PFN_SetCtx = BOOL(WINAPI*)(HANDLE);
-    if (auto setCtx = LoadUser32<PFN_SetCtx>("SetProcessDpiAwarenessContext")) {
-        if (setCtx(reinterpret_cast<HANDLE>(static_cast<INT_PTR>(-4)))) return;  // PER_MONITOR_AWARE_V2
-    }
-    SetProcessDPIAware();
-}
-
-static UINT SystemDpi() {
-    HDC hdc = GetDC(nullptr);
-    UINT dpi = hdc ? static_cast<UINT>(GetDeviceCaps(hdc, LOGPIXELSX)) : kBase;
-    if (hdc) ReleaseDC(nullptr, hdc);
-    return dpi ? dpi : kBase;
-}
-
-static UINT ForWindow(HWND hWnd) {
-    using PFN = UINT(WINAPI*)(HWND);
-    static auto getDpi = LoadUser32<PFN>("GetDpiForWindow");
-    if (getDpi && hWnd) {
-        UINT d = getDpi(hWnd);
-        if (d) return d;
-    }
-    return SystemDpi();
-}
-
-static UINT ForMonitor(HMONITOR hMon) {
-    using PFN = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
-    static PFN fn = []() -> PFN {
-        HMODULE shcore = LoadLibraryW(L"shcore.dll");
-        return shcore ? reinterpret_cast<PFN>(reinterpret_cast<void*>(GetProcAddress(shcore, "GetDpiForMonitor")))
-                      : nullptr;
-    }();
-    UINT x = 0, y = 0;
-    if (fn && hMon && SUCCEEDED(fn(hMon, 0, &x, &y)) && x) return x;
-    return SystemDpi();
-}
-
-static int Scale(int v, UINT dpi) { return MulDiv(v, static_cast<int>(dpi), static_cast<int>(kBase)); }
-
-static HFONT CreateUiFont(UINT dpi) {
-    NONCLIENTMETRICSW ncm = {};
-    ncm.cbSize = sizeof(ncm);
-    using PFN = BOOL(WINAPI*)(UINT, UINT, PVOID, UINT, UINT);
-    static auto spiForDpi = LoadUser32<PFN>("SystemParametersInfoForDpi");
-    if (spiForDpi && spiForDpi(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0, dpi)) {
-        return CreateFontIndirectW(&ncm.lfMessageFont);
-    }
-    if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
-        ncm.lfMessageFont.lfHeight = MulDiv(ncm.lfMessageFont.lfHeight, static_cast<int>(dpi),
-                                            static_cast<int>(SystemDpi()));
-        return CreateFontIndirectW(&ncm.lfMessageFont);
-    }
-    return nullptr;
-}
-}  // namespace Dpi
-
-static void ClampToWorkArea(RECT& rc, HMONITOR hMon) {
-    MONITORINFO mi = {};
-    mi.cbSize = sizeof(mi);
-    if (!hMon || !GetMonitorInfoW(hMon, &mi)) return;
-    const RECT& w = mi.rcWork;
-    LONG cw = (std::min)(rc.right - rc.left, w.right - w.left);
-    LONG ch = (std::min)(rc.bottom - rc.top, w.bottom - w.top);
-    LONG x = (std::max)(w.left, (std::min)(rc.left, w.right - cw));
-    LONG y = (std::max)(w.top, (std::min)(rc.top, w.bottom - ch));
-    rc = RECT{ x, y, x + cw, y + ch };
-}
+// (DPI helpers and ClampToWorkArea are in DDCommon.h.)
 
 // ---------------------------------------------------------------------------
 // Window state
@@ -731,6 +504,8 @@ static bool  g_filling = false;          // true while code fills the form (igno
 static bool  g_rebuilding = false;       // true while a list is being refilled
 static bool  g_checkingFiles = false;
 static std::wstring g_nameAtFocus;       // action name when its box got focus (rename detection)
+static UINT_PTR g_nameAtFocusId = 0;     // the action g_nameAtFocus belongs to (0 = none)
+static bool  g_renamePrompting = false;  // the "update connections?" question is open
 static HWND  g_lastFocus = nullptr;
 static RECT  g_normalRect = {};
 static UINT  g_normalRectDpi = USER_DEFAULT_SCREEN_DPI;
@@ -949,8 +724,9 @@ static void UpdateButtons(int tab) {
     EnableWindow(conn ? g_cAdd : g_aAdd, !blocked);
     EnableWindow(conn ? g_cDup : g_aDup, sel && !blocked);
     EnableWindow(conn ? g_cDel : g_aDel, sel && !blocked);
-    EnableWindow(conn ? g_cUp : g_aUp, canMove && i > 0);
-    EnableWindow(conn ? g_cDown : g_aDown, canMove && i + 1 < n);
+    const size_t none = static_cast<size_t>(-1);
+    EnableWindow(conn ? g_cUp : g_aUp, canMove && (conn ? ConnMoveTarget(i, -1) != none : i > 0));
+    EnableWindow(conn ? g_cDown : g_aDown, canMove && (conn ? ConnMoveTarget(i, +1) != none : i + 1 < n));
     EnableWindow(conn ? g_cList : g_aList, !blocked);
     if (conn) EnableWindow(g_cFilter, !blocked);
 
@@ -1048,21 +824,34 @@ static void OnActFieldChanged(HWND field) {
     UpdateActPreview();
 }
 
-// The action name box lost focus: if the action was renamed and connections
-// use the old name (and no other action still has it), offer to update them.
+// Start tracking a rename of the action `id`, whose name is now `name`.
+static void BeginNameEdit(UINT_PTR id, const std::wstring& name) {
+    g_nameAtFocusId = id;
+    g_nameAtFocus = name;
+}
+
+// A rename of the action name box is complete (focus moved to another control
+// of the editor, or Save / Add / Duplicate / Close): if the action was renamed
+// and connections use the old name (and no other action still has it), offer
+// to update them. The action is the one whose name was being edited
+// (g_nameAtFocusId), not whichever is selected now.
 static void OnActionNameCommitted() {
-    const size_t i = FindActIndex(g_selId[TAB_ACT]);
+    if (g_renamePrompting) return;  // already asking
+    const size_t i = FindActIndex(g_nameAtFocusId);
     if (i == static_cast<size_t>(-1)) return;
     const std::wstring oldName = Trim(g_nameAtFocus);
     const std::wstring newName = Trim(g_acts[i].action);
-    g_nameAtFocus = g_acts[i].action;
+    g_nameAtFocus = g_acts[i].action;  // the next rename starts from here
     if (oldName.empty() || newName.empty() || EqualsIgnoreCase(oldName, newName) || FindAction(oldName)) return;
 
     const int used = CountConnsUsing(oldName);
     if (used == 0) return;
     const std::wstring msg = std::to_wstring(used) + (used == 1 ? L" connection uses" : L" connections use") +
         L" the type \"" + oldName + L"\".\n\nChange " + (used == 1 ? L"it" : L"them") + L" to \"" + newName + L"\"?";
-    if (MessageBoxW(g_hWnd, msg.c_str(), L"Action renamed", MB_ICONQUESTION | MB_YESNO) == IDYES) {
+    g_renamePrompting = true;
+    const int answer = MessageBoxW(g_hWnd, msg.c_str(), L"Action renamed", MB_ICONQUESTION | MB_YESNO);
+    g_renamePrompting = false;
+    if (answer == IDYES) {
         for (ConnEntry& c : g_conns) {
             if (EqualsIgnoreCase(c.type, oldName)) c.type = newName;
         }
@@ -1107,6 +896,7 @@ static void OnAdd(int tab) {
         SetStatus(L"New connection added. Type its host, then pick a type.");
     } else {
         if (!g_actDoc.loadError.empty()) return;
+        OnActionNameCommitted();  // finish a pending rename of the current action
         const size_t i = FindActIndex(g_selId[TAB_ACT]);
         ActionEntry e;
         e.id = g_nextId++;
@@ -1115,7 +905,7 @@ static void OnAdd(int tab) {
         MarkDirty(TAB_ACT);
         RebuildList(TAB_ACT, e.id);
         SetFocus(g_aName);
-        g_nameAtFocus.clear();
+        BeginNameEdit(e.id, std::wstring());  // a new action: no connections use it yet
         SetStatus(L"New action added. Give it a name and a command.");
     }
 }
@@ -1132,6 +922,7 @@ static void OnDuplicate(int tab) {
         FocusAndSelectAll(g_cHost);
         SetStatus(L"Copy added below the original. Change its host.");
     } else {
+        OnActionNameCommitted();  // finish a pending rename of the current action
         const size_t i = FindActIndex(g_selId[TAB_ACT]);
         if (i == static_cast<size_t>(-1)) return;
         ActionEntry e = g_acts[i];
@@ -1141,7 +932,7 @@ static void OnDuplicate(int tab) {
         MarkDirty(TAB_ACT);
         RebuildList(TAB_ACT, e.id);
         FocusAndSelectAll(g_aName);
-        g_nameAtFocus.clear();
+        BeginNameEdit(e.id, std::wstring());  // the copy: connections still use the original
         SetStatus(L"Copy added below the original. Give it a new name.");
     }
 }
@@ -1204,9 +995,9 @@ static void OnMove(int tab, int delta) {
         if (!Trim(GetText(g_cFilter)).empty()) return;  // order is ambiguous while filtered
         const size_t i = FindConnIndex(g_selId[TAB_CONN]);
         if (i == static_cast<size_t>(-1)) return;
-        const ptrdiff_t j = static_cast<ptrdiff_t>(i) + delta;
-        if (j < 0 || j >= static_cast<ptrdiff_t>(g_conns.size())) return;
-        std::swap(g_conns[i], g_conns[static_cast<size_t>(j)]);
+        const size_t j = ConnMoveTarget(i, delta);  // within the group, if grouped
+        if (j == static_cast<size_t>(-1)) return;
+        std::swap(g_conns[i], g_conns[j]);
         MarkDirty(TAB_CONN);
         RebuildList(TAB_CONN, g_selId[TAB_CONN]);
     } else {
@@ -1221,22 +1012,22 @@ static void OnMove(int tab, int delta) {
 }
 
 static void OnBrowseCommand() {
-    wchar_t file[MAX_PATH] = {};
+    std::vector<wchar_t> file(32768, L'\0');  // long paths are allowed
     const std::wstring current = Trim(GetText(g_aCmd));
-    std::wstring initialDir;
-    if (!current.empty() && !StartsWithUrlScheme(current) && FileExists(current)) {
-        wcsncpy_s(file, current.c_str(), _TRUNCATE);
+    if (!current.empty() && !StartsWithUrlScheme(current) && FileExists(current) &&
+        current.size() < file.size()) {
+        std::copy(current.begin(), current.end(), file.begin());
     }
     OPENFILENAMEW ofn = {};
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = g_hWnd;
     ofn.lpstrFilter = L"Programs (*.exe;*.com;*.bat;*.cmd)\0*.exe;*.com;*.bat;*.cmd\0All files (*.*)\0*.*\0";
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFile = file.data();
+    ofn.nMaxFile = static_cast<DWORD>(file.size());
     ofn.lpstrTitle = L"Choose the program this action runs";
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
     if (GetOpenFileNameW(&ofn)) {
-        SetWindowTextW(g_aCmd, file);  // EN_CHANGE updates the data
+        SetWindowTextW(g_aCmd, file.data());  // EN_CHANGE updates the data
         SetFocus(g_aCmd);
     }
 }
@@ -1308,7 +1099,10 @@ static std::wstring CollectProblems(int limit, int& total) {
 
 // Save both files if they have unsaved changes. Returns false if the user
 // cancelled or a write failed (so closing should be cancelled too).
+static void OnActionNameCommitted();
+
 static bool SaveAll() {
+    OnActionNameCommitted();  // finish a pending rename first (no-op if none)
     if (!AnyDirty()) return true;
 
     int total = 0;
@@ -1336,8 +1130,10 @@ static bool SaveAll() {
             }
         }
         if (g_connDoc.dirty && g_connDoc.loadError.empty()) {
-            const std::wstring err = WriteFileSafely(ConnectionsPath(), BuildConnectionsText(), true);
+            std::vector<ConnEntry> savedConns;
+            const std::wstring err = WriteFileSafely(ConnectionsPath(), BuildConnectionsText(savedConns), true);
             if (err.empty()) {
+                g_conns = std::move(savedConns);  // only now: the file was written
                 g_connDoc.dirty = false;
                 g_connDoc.skipped = 0;
                 g_connDoc.grouped = g_connDoc.grouped || becameGrouped;
@@ -1814,7 +1610,7 @@ static void ShowAboutBox() {
         L"Author:  " APP_AUTHOR L"\n"
         L"Release date:  " APP_RELEASE_DATE L"\n"
         L"Version:  " + std::wstring(APP_VERSION).substr(1) + L"\n\n"
-        L"Win32 C++ · nlohmann/json " + jsonVer;
+        L"Win32 C++ \u00B7 nlohmann/json " + jsonVer;  // middle dot
 
     MSGBOXPARAMSW mbp = {};
     mbp.cbSize = sizeof(mbp);
@@ -1936,10 +1732,19 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         case IDC_A_NAME:
             if (code == EN_CHANGE) OnActFieldChanged(ctl);
             else if (code == EN_SETFOCUS) {
+                // Back in the same action's name (e.g. after a message box):
+                // a rename may still be pending, so keep the name it started
+                // from. Another action: start tracking that one.
                 const size_t i = FindActIndex(g_selId[TAB_ACT]);
-                g_nameAtFocus = i != static_cast<size_t>(-1) ? g_acts[i].action : std::wstring();
+                if (i != static_cast<size_t>(-1) && g_acts[i].id != g_nameAtFocusId) {
+                    BeginNameEdit(g_acts[i].id, g_acts[i].action);
+                }
             } else if (code == EN_KILLFOCUS) {
-                OnActionNameCommitted();
+                // Only when focus moved to another control of the editor. If
+                // it went to a message box or another program, the question
+                // waits until the user carries on in the editor.
+                const HWND to = GetFocus();
+                if (to && (to == hWnd || IsChild(hWnd, to))) OnActionNameCommitted();
             }
             return 0;
         case IDC_A_CMD: case IDC_A_ARGS: case IDC_A_TEST:
@@ -2007,7 +1812,7 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
 
     case WM_CLOSE:
-        if (GetFocus() == g_aName) OnActionNameCommitted();  // finish a pending rename first
+        OnActionNameCommitted();  // finish a pending rename first (no-op if none)
         if (!ConfirmDiscardOrSave(L"closing")) return 0;
         DestroyWindow(hWnd);
         return 0;

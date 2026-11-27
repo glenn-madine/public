@@ -1,6 +1,6 @@
 //{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
-// Used by DDLaunch.rc
+// Used by DDLaunch.rc and DDLaunchEdit.rc (both programs use the same icon).
 //
 #define IDI_ICON1                       101
 

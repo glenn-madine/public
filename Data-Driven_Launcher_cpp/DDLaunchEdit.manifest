@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- DDLaunchEdit.manifest - embedded by DDLaunchEdit.rc as RT_MANIFEST resource 1.
+     The only manifest source for DDLaunchEdit.exe (link with /MANIFEST:NO). -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="GlennMadine.DDLaunchPlus.Editor" version="1.0.1.0" processorArchitecture="*"/>
+  <!-- The assembly version is not the program version (that is in version.h)
+       and never needs changing (R16). -->
+  <assemblyIdentity type="win32" name="GlennMadine.DDLaunchEdit" version="1.0.0.0" processorArchitecture="*"/>
   <description>DDLaunch+ Editor</description>
 
-  <!-- Common Controls v6: visual styles, cue banners, themed list and tabs -->
+  <!-- Common Controls v6: visual styles, SysLink, cue banners, tab control themes -->
   <dependency>
     <dependentAssembly>
       <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"
@@ -11,7 +15,7 @@
     </dependentAssembly>
   </dependency>
 
-  <!-- Runs with the user's normal rights (it only writes to %USERPROFILE%\DDLaunch) -->
+  <!-- Run as the user (no elevation prompt) -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
@@ -20,18 +24,21 @@
     </security>
   </trustInfo>
 
-  <!-- Per-Monitor V2 DPI awareness (falls back to Per-Monitor on older Windows 10) -->
+  <!-- Supported Windows versions: 7, 8, 8.1, 10/11 -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+    </application>
+  </compatibility>
+
+  <!-- Per-Monitor V2 DPI awareness (Windows 10 1703+), Per-Monitor on older systems -->
   <application xmlns="urn:schemas-microsoft-com:asm.v3">
     <windowsSettings>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
     </windowsSettings>
   </application>
-
-  <!-- Windows 10 / 11 -->
-  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
-    <application>
-      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
-    </application>
-  </compatibility>
 </assembly>

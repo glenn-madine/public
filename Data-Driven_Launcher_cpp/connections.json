@@ -1,133 +1,201 @@
-[
-    {
-        "host": "dc1.ynext.corp",
-        "type": "RDP",
-        "description": "Primary Domain Controller"
-    },
-    {
-        "host": "dc02.corp.local",
-        "type": "RDP",
-        "description": "Secondary Domain Controller"
-    },
-    {
-        "host": "fileserver01",
-        "type": "RDP",
-        "description": "File Server — Building A"
-    },
-    {
-        "host": "devbox-win11.corp.local",
-        "type": "RDP",
-        "description": "Windows 11 Dev Workstation"
-    },
-    {
-        "host": "192.168.1.1",
-        "type": "FTP",
-        "description": "Core Router Admin"
-    },
-    {
-        "host": "192.168.1.2",
-        "type": "HTTPS",
-        "description": "Managed Switch — Floor 1"
-    },
-    {
-        "host": "proxmox.corp.local:8006",
-        "type": "HTTPS",
-        "description": "Proxmox Hypervisor Dashboard"
-    },
-    {
-        "host": "grafana.corp.local:3000",
-        "type": "HTTP",
-        "description": "Grafana Monitoring (internal)"
-    },
-    {
-        "host": "jenkins.corp.local:8080",
-        "type": "HTTP",
-        "description": "Jenkins CI — Build Server"
-    },
-    {
-        "host": "webserver01.corp.local",
-        "type": "SSH",
-        "description": "Nginx Web Server — Production"
-    },
-    {
-        "host": "dbserver01.corp.local",
-        "type": "SSH",
-        "description": "PostgreSQL Database Server"
-    },
-    {
-        "host": "backup01.corp.local",
-        "type": "SSH",
-        "description": "Backup Server (rsync)"
-    },
-    {
-        "host": "pi.hole.local",
-        "type": "SSH",
-        "description": "Pi-hole DNS / Ad Blocker"
-    },
-    {
-        "host": "SomePC.local",
-        "type": "VNC",
-        "description": "Some Windows PC"
-    },
-    {
-        "host": "SomeOtherPC.local",
-        "type": "VNC",
-        "description": "Some Other Windows PC"
-    },
-	{
-		"host": "C:\\IT",
-		"type": "START",
-        "description": "Open IT Folder on Drive C"
-    },
-	{
-        "host": "%OneDrive%",
-        "type": "START",
-        "description": "OneDrive"
-    },
-	{
-        "host": "Desktop",
-        "type": "SHELL",
-        "description": "Desktop"
-    },
-    {
-        "host": "Documents",
-        "type": "SHELL",
-        "description": "Documents"
-    },
-    {
-        "host": "Profile",
-        "type": "SHELL",
-        "description": "Profile"
-    },
-    {
-        "host": "Downloads",
-        "type": "SHELL",
-        "description": "Downloads"
-    },
-    {
-        "host": "MyComputerFolder",
-        "type": "SHELL",
-        "description": "This PC"
-    },
-    {
-        "host": "::{21EC2020-3AEA-1069-A2DD-08002B30309D}",
-        "type": "SHELL",
-        "description": "Control Panel"
-    },
-    {
-        "host": "::{ED7BA470-8E54-465E-825C-99712043E01C}",
-        "type": "SHELL",
-        "description": "God Mode"
-    },
-    {
-        "host": "\"C:\\Program Files (x86)\\SomeFolder\\SomeBatch.bat\"",
-        "type": "CMD",
-        "description": "Run SomeBatch.bat"
-    },
-    {
-		"host": "www.microsoft.com",
-		"type": "InPrivate",
-		"description": "launch site in private mode"
-	}
-
-]
+{
+    "Active Directory": [
+        {
+            "host": "dc1.mydomain.corp",
+            "type": "RDP",
+            "description": "Windows 2012R2 DC"
+        },
+        {
+            "host": "ca1.mydomain.corp",
+            "type": "RDP",
+            "description": "Domain CA"
+        },
+        {
+            "host": "entra.microsoft.com",
+            "type": "HTTPS",
+            "description": "Entra/Azure"
+        },
+        {
+            "host": "intune.microsoft.com",
+            "type": "HTTPS",
+            "description": "Intune"
+        }
+    ],
+    "AI": [
+        {
+            "host": "claude.ai/new",
+            "type": "HTTPS",
+            "description": "Claude"
+        },
+        {
+            "host": "grok.com",
+            "type": "HTTPS",
+            "description": "Grok"
+        },
+        {
+            "host": "chatgpt.com",
+            "type": "HTTPS",
+            "description": "ChatGPT"
+        },
+        {
+            "host": "copilot.com/chat",
+            "type": "HTTPS",
+            "description": "Copilot"
+        },
+        {
+            "host": "gemini.google.com/app",
+            "type": "HTTPS",
+            "description": "Gemini"
+        }
+    ],
+    "Commands": [
+        {
+            "host": "dir",
+            "type": "PowerShell",
+            "description": "test dir"
+        },
+        {
+            "host": "C:\\PROGRA~2\\MICROS~2\\18\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat",
+            "type": "CMD",
+            "description": "Visual Studio Command Line"
+        }
+    ],
+    "Databases": [
+        {
+            "host": "sql.mydomain.corp",
+            "type": "RDP",
+            "description": "SQL 2012"
+        }
+    ],
+    "Devices": [
+        {
+            "host": "192.168.1.1",
+            "type": "HTTP",
+            "description": "router"
+        },
+        {
+            "host": "192.168.1.254",
+            "type": "HTTP",
+            "description": "switch"
+        },
+        {
+            "host": "192.168.1.77",
+            "type": "HTTP",
+            "description": "WiFi"
+        },
+        {
+            "host": "pihole04.mydomain.corp/admin",
+            "type": "HTTPS",
+            "description": "Pi Hole"
+        }
+    ],
+    "Drives": [
+        {
+            "host": "P:\\",
+            "type": "START",
+            "description": "P Drive"
+        },
+        {
+            "host": "H:\\",
+            "type": "START",
+            "description": "H Home Drive"
+        },
+        {
+            "host": "%OneDrive%",
+            "type": "START",
+            "description": "OneDrive"
+        }
+    ],
+    "File Servers": [
+        {
+            "host": "fs1.mydomain.corp",
+            "type": "RDP",
+            "description": "File Server"
+        },
+        {
+            "host": "pinas.mydomain.corp",
+            "type": "HTTP",
+            "description": "PI NAS Server"
+        }
+    ],
+    "InPrivate connections": [
+        {
+            "host": "vdi.somesite.com",
+            "type": "InPrivate",
+            "description": "somesite VDI"
+        },
+        {
+            "host": "outlook.cloud.microsoft",
+            "type": "InPrivate",
+            "description": "MyWorkEmail Mail"
+        }
+    ],
+    "Learning": [
+        {
+            "host": "www.cbtnuggets.com",
+            "type": "HTTPS",
+            "description": "IT Learning"
+        }
+    ],
+    "PCs": [
+        {
+            "host": "mywin7pc.mydomain.corp",
+            "type": "RDP",
+            "description": "Windows 7"
+        },
+        {
+            "host": "mywin11pc.mydomain.corp",
+            "type": "RDP",
+            "description": "Windows 11 PC"
+        }
+    ],
+    "Shopping": [
+        {
+            "host": "www.amazon.com",
+            "type": "HTTPS",
+            "description": "Amazon"
+        },
+        {
+            "host": "www.ebay.com",
+            "type": "HTTPS",
+            "description": "ebay"
+        }
+    ],
+    "Windows Explorer": [
+        {
+            "host": "Desktop",
+            "type": "SHELL",
+            "description": "Desktop"
+        },
+        {
+            "host": "Documents",
+            "type": "SHELL",
+            "description": "Documents"
+        },
+        {
+            "host": "Profile",
+            "type": "SHELL",
+            "description": "Profile"
+        },
+        {
+            "host": "Downloads",
+            "type": "SHELL",
+            "description": "Downloads"
+        },
+        {
+            "host": "MyComputerFolder",
+            "type": "SHELL",
+            "description": "This PC"
+        },
+        {
+            "host": "::{21EC2020-3AEA-1069-A2DD-08002B30309D}",
+            "type": "SHELL",
+            "description": "Control Panel"
+        },
+        {
+            "host": "::{ED7BA470-8E54-465E-825C-99712043E01C}",
+            "type": "SHELL",
+            "description": "God Mode"
+        }
+    ]
+}
